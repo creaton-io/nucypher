@@ -837,4 +837,13 @@ class BlockchainPolicy(Policy):
             transacting_power = self.alice._crypto_power.power_ups(TransactingPower)
             publisher = self.publish_treasure_map(network_middleware=network_middleware,
                                                   blockchain_signer=transacting_power.sign_message)
+        else:
+            self.treasure_map.prepare_for_publication(bob_encrypting_key=self.bob.public_keys(DecryptingPower),
+                                                      bob_verifying_key=self.bob.public_keys(SigningPower),
+                                                      alice_stamp=self.alice.stamp,
+                                                      label=self.label)
+            # Sign the map.
+            transacting_power = self.alice._crypto_power.power_ups(TransactingPower)
+            self.treasure_map.include_blockchain_signature(transacting_power.sign_message)
+
         return publisher
