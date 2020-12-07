@@ -99,3 +99,7 @@ class Signer(ABC):
     @abstractmethod
     def sign_message(self, account: str, message: bytes, **kwargs) -> HexBytes:
         return NotImplemented
+
+    @abstractmethod
+    def sign_and_broadcast_transaction(self, transaction_dict: dict) -> str:
+        return NotImplemented

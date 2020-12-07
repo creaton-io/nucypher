@@ -206,6 +206,11 @@ class TransactingPower(CryptoPowerUp):
             raise self.AccountLocked("Failed to unlock account {}".format(self.__account))
         return self._signer.sign_transaction(transaction_dict=transaction_dict)
 
+    def sign_and_broadcast_transaction(self, transaction_dict: dict) -> str:
+        if not self.is_unlocked:
+            raise self.AccountLocked("Failed to unlock account {}".format(self.__account))
+        return self._signer.sign_and_broadcast_transaction(transaction_dict=transaction_dict)
+
 
 class KeyPairBasedPower(CryptoPowerUp):
     confers_public_key = True
