@@ -566,7 +566,8 @@ class BlockchainInterface:
                                        transaction_dict,
                                        transaction_name: str = "",
                                        confirmations: int = 0,
-                                       fire_and_forget: bool = False
+                                       fire_and_forget: bool = False,
+                                       metamsk: bool = True
                                        ) -> Union[TxReceipt, HexBytes]:
         """
         Takes a transaction dictionary, signs it with the configured signer, then broadcasts the signed
@@ -600,58 +601,87 @@ class BlockchainInterface:
         cost_wei = price * transaction_dict['gas']
         cost = Web3.fromWei(cost_wei, 'ether')
 
-        if self.transacting_power.is_device:
-            emitter.message(f'Confirm transaction {transaction_name} on hardware wallet... '
-                            f'({cost} ETH @ {price_gwei} gwei)',
+        if not metamsk:
+            if self.transacting_power.is_device:
+                emitter.message(f'Confirm transaction {transaction_name} on hardware wallet... '
+                                f'({cost} ETH @ {price_gwei} gwei)',
+                                color='yellow')
+            signed_raw_transaction = self.transacting_power.sign_transaction(transaction_dict)
+
+            #
+            # Broadcast
+            #
+            emitter.message(f'Broadcasting {transaction_name} Transaction ({cost} ETH @ {price_gwei} gwei)...',
                             color='yellow')
-        signed_raw_transaction = self.transacting_power.sign_transaction(transaction_dict)
+            try:
+                txhash = self.client.send_raw_transaction(signed_raw_transaction)  # <--- BROADCAST
+            except (TestTransactionFailed, ValueError):
+                raise  # TODO: Unify with Transaction failed handling -- Entry point for _handle_failed_transaction
+            else:
+                if fire_and_forget:
+                    return txhash
 
-        #
-        # Broadcast
-        #
-        emitter.message(f'Broadcasting {transaction_name} Transaction ({cost} ETH @ {price_gwei} gwei)...',
-                        color='yellow')
-        try:
-            txhash = self.client.send_raw_transaction(signed_raw_transaction)  # <--- BROADCAST
-        except (TestTransactionFailed, ValueError):
-            raise  # TODO: Unify with Transaction failed handling -- Entry point for _handle_failed_transaction
+            #
+            # Receipt
+            #
+
+            try:  # TODO: Handle block confirmation exceptions
+                receipt = self.client.wait_for_receipt(txhash, timeout=self.TIMEOUT, confirmations=confirmations)
+            except TimeExhausted:
+                # TODO: #1504 - Handle transaction timeout
+                raise
+            else:
+                self.log.debug(f"[RECEIPT-{transaction_name}] | txhash: {receipt['transactionHash'].hex()}")
+
+            #
+            # Confirmations
+            #
+
+            # Primary check
+            transaction_status = receipt.get('status', UNKNOWN_TX_STATUS)
+            if transaction_status == 0:
+                failure = f"Transaction transmitted, but receipt returned status code 0. " \
+                          f"Full receipt: \n {pprint.pformat(receipt, indent=2)}"
+                raise self.InterfaceError(failure)
+
+            if transaction_status is UNKNOWN_TX_STATUS:
+                self.log.info(f"Unknown transaction status for {txhash} (receipt did not contain a status field)")
+
+                # Secondary check
+                tx = self.client.get_transaction(txhash)
+                if tx["gas"] == receipt["gasUsed"]:
+                    raise self.InterfaceError(f"Transaction consumed 100% of transaction gas."
+                                              f"Full receipt: \n {pprint.pformat(receipt, indent=2)}")
+
+            return receipt
         else:
-            if fire_and_forget:
-                return txhash
+            """
+            Metamask sign and broadcast
+            """
 
-        #
-        # Receipt
-        #
+            #
+            # Sign and Broadcast
+            #
 
-        try:  # TODO: Handle block confirmation exceptions
-            receipt = self.client.wait_for_receipt(txhash, timeout=self.TIMEOUT, confirmations=confirmations)
-        except TimeExhausted:
-            # TODO: #1504 - Handle transaction timeout
-            raise
-        else:
-            self.log.debug(f"[RECEIPT-{transaction_name}] | txhash: {receipt['transactionHash'].hex()}")
+            if self.transacting_power.is_device:
+                emitter.message(f'Confirm transaction {transaction_name} on hardware wallet... '
+                                f'({cost} ETH @ {price_gwei} gwei)',
+                                color='yellow')
+            txhash = self.transacting_power.sign_and_broadcast_transaction(transaction_dict)
 
-        #
-        # Confirmations
-        #
+            #
+            # Receipt
+            #
 
-        # Primary check
-        transaction_status = receipt.get('status', UNKNOWN_TX_STATUS)
-        if transaction_status == 0:
-            failure = f"Transaction transmitted, but receipt returned status code 0. " \
-                      f"Full receipt: \n {pprint.pformat(receipt, indent=2)}"
-            raise self.InterfaceError(failure)
+            try:  # TODO: Handle block confirmation exceptions
+                receipt = self.client.wait_for_receipt(txhash, timeout=self.TIMEOUT, confirmations=confirmations)
+            except TimeExhausted:
+                # TODO: #1504 - Handle transaction timeout
+                raise
+            else:
+                self.log.debug(f"[RECEIPT-{transaction_name}] | txhash: {receipt['transactionHash'].hex()}")
 
-        if transaction_status is UNKNOWN_TX_STATUS:
-            self.log.info(f"Unknown transaction status for {txhash} (receipt did not contain a status field)")
-
-            # Secondary check
-            tx = self.client.get_transaction(txhash)
-            if tx["gas"] == receipt["gasUsed"]:
-                raise self.InterfaceError(f"Transaction consumed 100% of transaction gas."
-                                          f"Full receipt: \n {pprint.pformat(receipt, indent=2)}")
-
-        return receipt
+            return receipt
 
     def get_blocktime(self):
         return self.client.get_blocktime()
