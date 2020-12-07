@@ -39,10 +39,10 @@ colorama = "*"
 tabulate = "*"
 # Utility
 trezor = "*"
-
 # Felix
 flask_sqlalchemy = "*"
 sqlalchemy = "*"
+nucypher = {path = "."}
 
 [dev-packages]
 # Pytest
