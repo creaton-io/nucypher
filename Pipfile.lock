@@ -618,8 +618,7 @@
             "version": "==0.8.0"
         },
         "nucypher": {
-            "path": ".",
-            "version": "==4.2.1"
+            "path": "."
         },
         "parsimonious": {
             "hashes": [
