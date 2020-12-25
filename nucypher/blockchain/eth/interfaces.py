@@ -667,7 +667,7 @@ class BlockchainInterface:
                 emitter.message(f'Confirm transaction {transaction_name} on hardware wallet... '
                                 f'({cost} ETH @ {price_gwei} gwei)',
                                 color='yellow')
-            txhash = self.transacting_power.sign_and_broadcast_transaction(transaction_dict)
+            txhash = self.transacting_power.sign_transaction(transaction_dict)
 
             #
             # Receipt
