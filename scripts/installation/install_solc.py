@@ -25,17 +25,14 @@ but otherwise does not require installation of `nucypher` or its dependencies.
 """
 
 
-from os.path import dirname, abspath
-
 import os
 import sys
 from pathlib import Path
 
-import nucypher
-
 
 def get_solc_config_path() -> Path:
-    nucypher = Path('nucypher').absolute()
+    # Note: This script is sensitive to the working directory.
+    nucypher = Path(__file__).parent.parent.parent.resolve() / 'nucypher'
     config_path = nucypher / 'blockchain' / 'eth' / 'sol' / '__conf__.py'
     return config_path
 

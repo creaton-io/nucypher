@@ -15,25 +15,21 @@ You should have received a copy of the GNU Affero General Public License
 along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import contextlib
+
 import json
+
+import contextlib
+import maya
 import os
+import pytest
 import random
 import shutil
 import tempfile
-from datetime import datetime, timedelta
-from functools import partial
-from typing import Tuple
-
-import maya
-import pytest
 from click.testing import CliRunner
+from datetime import datetime, timedelta
 from eth_utils import to_checksum_address
+from functools import partial
 from typing import Tuple, Callable
-from umbral import pre
-from umbral.curvebn import CurveBN
-from umbral.keys import UmbralPrivateKey
-from umbral.signing import Signer
 from web3 import Web3
 from web3.contract import Contract
 from web3.types import TxReceipt
@@ -41,7 +37,6 @@ from web3.types import TxReceipt
 from nucypher.blockchain.economics import BaseEconomics, StandardTokenEconomics
 from nucypher.blockchain.eth.actors import StakeHolder, Staker
 from nucypher.blockchain.eth.agents import NucypherTokenAgent, PolicyManagerAgent, StakingEscrowAgent
-from nucypher.blockchain.eth.clients import NuCypherGethDevProcess
 from nucypher.blockchain.eth.deployers import (
     AdjudicatorDeployer,
     NucypherTokenDeployer,
@@ -66,7 +61,6 @@ from nucypher.config.constants import TEMPORARY_DOMAIN
 from nucypher.crypto.powers import TransactingPower
 from nucypher.datastore import datastore
 from nucypher.utilities.logging import GlobalLoggerSettings, Logger
-
 from tests.constants import (
     BASE_TEMP_DIR,
     BASE_TEMP_PREFIX,
@@ -107,8 +101,13 @@ from tests.utils.config import (
 )
 from tests.utils.middleware import MockRestMiddleware, MockRestMiddlewareForLargeFleetTests
 from tests.utils.policy import generate_random_label
-from tests.utils.ursula import MOCK_URSULA_STARTING_PORT, make_decentralized_ursulas, make_federated_ursulas, \
-    MOCK_KNOWN_URSULAS_CACHE, _mock_ursula_reencrypts
+from tests.utils.ursula import (
+    MOCK_URSULA_STARTING_PORT,
+    make_decentralized_ursulas,
+    make_federated_ursulas,
+    MOCK_KNOWN_URSULAS_CACHE,
+    _mock_ursula_reencrypts
+)
 
 test_logger = Logger("test-logger")
 
@@ -239,13 +238,12 @@ def enacted_federated_policy(idle_federated_policy, federated_ursulas):
     # Alice has a policy in mind and knows of enough qualifies Ursulas; she crafts an offer for them.
     network_middleware = MockRestMiddleware()
 
-    idle_federated_policy.make_arrangements(network_middleware, handpicked_ursulas=federated_ursulas)
-
     # REST call happens here, as does population of TreasureMap.
-    idle_federated_policy.enact(network_middleware)
-    idle_federated_policy.publishing_mutex.block_until_complete()
+    enacted_policy = idle_federated_policy.enact(network_middleware=network_middleware,
+                                                 handpicked_ursulas=federated_ursulas)
+    enacted_policy.treasure_map_publisher.block_until_complete()
 
-    return idle_federated_policy
+    return enacted_policy
 
 
 @pytest.fixture(scope="module")
@@ -277,12 +275,11 @@ def enacted_blockchain_policy(idle_blockchain_policy, blockchain_ursulas):
     # contract_end_datetime = maya.now() + datetime.timedelta(days=5)
     network_middleware = MockRestMiddleware()
 
-    idle_blockchain_policy.make_arrangements(
-        network_middleware, handpicked_ursulas=list(blockchain_ursulas))
-
-    idle_blockchain_policy.enact(network_middleware)  # REST call happens here, as does population of TreasureMap.
-    idle_blockchain_policy.publishing_mutex.block_until_complete()
-    return idle_blockchain_policy
+    # REST call happens here, as does population of TreasureMap.
+    enacted_policy = idle_blockchain_policy.enact(network_middleware=network_middleware,
+                                                  handpicked_ursulas=list(blockchain_ursulas))
+    enacted_policy.treasure_map_publisher.block_until_complete()
+    return enacted_policy
 
 
 @pytest.fixture(scope="module")
@@ -373,17 +370,21 @@ def blockchain_bob(bob_blockchain_test_config, testerchain):
 @pytest.fixture(scope="module")
 def federated_ursulas(ursula_federated_test_config):
     if MOCK_KNOWN_URSULAS_CACHE:
-        raise RuntimeError("Ursulas cache was unclear at fixture loading time.  Did you use one of the ursula maker functions without cleaning up?")
+        # raise RuntimeError("Ursulas cache was unclear at fixture loading time.  Did you use one of the ursula maker functions without cleaning up?")
+        MOCK_KNOWN_URSULAS_CACHE.clear()
+
     _ursulas = make_federated_ursulas(ursula_config=ursula_federated_test_config,
                                       quantity=NUMBER_OF_URSULAS_IN_DEVELOPMENT_NETWORK)
+
     # Since we mutate this list in some tests, it's not enough to remember and remove the Ursulas; we have to remember them by port.
     # The same is true of blockchain_ursulas below.
     _ports_to_remove = [ursula.rest_interface.port for ursula in _ursulas]
     yield _ursulas
 
     for port in _ports_to_remove:
-        test_logger.debug(f"Removing {port} ({MOCK_KNOWN_URSULAS_CACHE[port]}).")
-        del MOCK_KNOWN_URSULAS_CACHE[port]
+        if port in MOCK_KNOWN_URSULAS_CACHE:
+            test_logger.debug(f"Removing {port} ({MOCK_KNOWN_URSULAS_CACHE[port]}).")
+            del MOCK_KNOWN_URSULAS_CACHE[port]
 
     for u in _ursulas:
         u.stop()
@@ -683,11 +684,14 @@ def stakers(testerchain, agency, token_economics, test_registry):
 @pytest.fixture(scope="module")
 def blockchain_ursulas(testerchain, stakers, ursula_decentralized_test_config):
     if MOCK_KNOWN_URSULAS_CACHE:
-        raise RuntimeError("Ursulas cache was unclear at fixture loading time.  Did you use one of the ursula maker functions without cleaning up?")
+        # TODO: Is this a safe assumption / test behaviour?
+        # raise RuntimeError("Ursulas cache was unclear at fixture loading time.  Did you use one of the ursula maker functions without cleaning up?")
+        MOCK_KNOWN_URSULAS_CACHE.clear()
+
     _ursulas = make_decentralized_ursulas(ursula_config=ursula_decentralized_test_config,
                                           stakers_addresses=testerchain.stakers_accounts,
                                           workers_addresses=testerchain.ursulas_accounts,
-                                          commit_to_next_period=True)
+                                          commit_now=True)
     for u in _ursulas:
         u.synchronous_query_timeout = .01  # We expect to never have to wait for content that is actually on-chain during tests.
     testerchain.time_travel(periods=1)
@@ -777,17 +781,6 @@ def funded_blockchain(testerchain, agency, token_economics, test_registry):
 @pytest.fixture(scope='session')
 def mock_ursula_reencrypts():
     return _mock_ursula_reencrypts
-
-
-@pytest.fixture(scope='session')
-def instant_geth_dev_node():
-    geth = NuCypherGethDevProcess()
-    try:
-        yield geth
-    finally:
-        if geth.is_running:
-            geth.stop()
-            assert not geth.is_running
 
 
 @pytest.fixture(scope='session')

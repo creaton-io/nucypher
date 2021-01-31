@@ -524,7 +524,7 @@ def test_collect_rewards_integration(click_runner,
                     registry=agency_local_registry,
                     rest_host='127.0.0.1',
                     rest_port=ursula_port,
-                    start_working_now=False,
+                    commit_now=False,
                     network_middleware=MockRestMiddleware(),
                     db_filepath=tempfile.mkdtemp(),
                     domain=TEMPORARY_DOMAIN)
@@ -557,8 +557,7 @@ def test_collect_rewards_integration(click_runner,
                                                handpicked_ursulas={ursula})
 
     # Ensure that the handpicked Ursula was selected for the policy
-    arrangement = list(blockchain_policy._accepted_arrangements)[0]
-    assert arrangement.ursula == ursula
+    assert ursula.checksum_address in blockchain_policy.treasure_map.destinations
 
     # Bob learns about the new staker and joins the policy
     blockchain_bob.remember_node(node=ursula)

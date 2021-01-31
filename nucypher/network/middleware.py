@@ -25,6 +25,7 @@ from constant_sorrow.constants import CERTIFICATE_NOT_SAVED, EXEMPT_FROM_VERIFIC
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 
+from nucypher.blockchain.eth.networks import NetworksInventory
 from nucypher.crypto.signing import signature_splitter
 from nucypher.crypto.splitters import cfrag_splitter
 from nucypher.utilities.logging import Logger
@@ -35,7 +36,6 @@ EXEMPT_FROM_VERIFICATION.bool_value(False)
 class NucypherMiddlewareClient:
     library = requests
     timeout = 1.2
-
 
     def __init__(self, registry=None, *args, **kwargs):
         self.registry = registry
@@ -146,8 +146,9 @@ class RestMiddleware:
     _client_class = NucypherMiddlewareClient
 
     TEACHER_NODES = {
-        'ibex': ('https://ibex.nucypher.network:9151',),
-        'mainnet': ('https://mainnet.nucypher.network:9151',),
+        NetworksInventory.MAINNET: ('https://mainnet.nucypher.network:9151',),
+        NetworksInventory.LYNX: ('https://lynx.nucypher.network:9151',),
+        NetworksInventory.IBEX: ('https://ibex.nucypher.network:9151',),
     }
 
     class UnexpectedResponse(Exception):
@@ -193,8 +194,7 @@ class RestMiddleware:
                                                          backend=default_backend())
             return certificate
 
-    def propose_arrangement(self, arrangement):
-        node = arrangement.ursula
+    def propose_arrangement(self, node, arrangement):
         response = self.client.post(node_or_sprout=node,
                                     path="consider_arrangement",
                                     data=bytes(arrangement),

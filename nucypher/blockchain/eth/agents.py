@@ -1721,16 +1721,17 @@ class ContractAgency:
 
         if not registry:
             if len(cls.__agents) == 1:
-                _registry_id = list(cls.__agents.keys()).pop()
+                registry_id = list(cls.__agents.keys()).pop()
             else:
                 raise ValueError("Need to specify a registry in order to get an agent from the ContractAgency")
-
+        else:
+            registry_id = registry.id
         try:
-            return cast(Agent, cls.__agents[registry.id][agent_class])
+            return cast(Agent, cls.__agents[registry_id][agent_class])
         except KeyError:
             agent = cast(Agent, agent_class(registry=registry, provider_uri=provider_uri))
-            cls.__agents[registry.id] = cls.__agents.get(registry.id, dict())
-            cls.__agents[registry.id][agent_class] = agent
+            cls.__agents[registry_id] = cls.__agents.get(registry_id, dict())
+            cls.__agents[registry_id][agent_class] = agent
             return agent
 
     @staticmethod
@@ -1760,9 +1761,13 @@ class WeightedSampler:
     """
 
     def __init__(self, weighted_elements: Dict[Any, int]):
-        elements, weights = zip(*weighted_elements.items())
+        if weighted_elements:
+            elements, weights = zip(*weighted_elements.items())
+        else:
+            elements, weights = [], []
         self.totals = list(accumulate(weights))
         self.elements = elements
+        self.__length = len(self.totals)
 
     def sample_no_replacement(self, rng, quantity: int) -> list:
         """
@@ -1780,25 +1785,26 @@ class WeightedSampler:
         if quantity > len(self):
             raise ValueError("Cannot sample more than the total amount of elements without replacement")
 
-        totals = self.totals.copy()
         samples = []
 
         for i in range(quantity):
-            position = rng.randint(0, totals[-1] - 1)
-            idx = bisect_right(totals, position)
+            position = rng.randint(0, self.totals[-1] - 1)
+            idx = bisect_right(self.totals, position)
             samples.append(self.elements[idx])
 
             # Adjust the totals so that they correspond
             # to the weight of the element `idx` being set to 0.
-            prev_total = totals[idx - 1] if idx > 0 else 0
-            weight = totals[idx] - prev_total
-            for j in range(idx, len(totals)):
-                totals[j] -= weight
+            prev_total = self.totals[idx - 1] if idx > 0 else 0
+            weight = self.totals[idx] - prev_total
+            for j in range(idx, len(self.totals)):
+                self.totals[j] -= weight
+
+        self.__length -= quantity
 
         return samples
 
     def __len__(self):
-        return len(self.totals)
+        return self.__length
 
 
 class StakersReservoir:

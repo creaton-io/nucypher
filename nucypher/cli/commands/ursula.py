@@ -17,29 +17,28 @@
 
 
 import click
-import os
 
-from constant_sorrow.constants import NO_BLOCKCHAIN_CONNECTION
-
-from nucypher.cli.actions.configure import forget as forget_nodes
 from nucypher.blockchain.economics import EconomicsFactory
+from nucypher.blockchain.eth.networks import NetworksInventory
 from nucypher.blockchain.eth.signers.software import ClefSigner
 from nucypher.blockchain.eth.utils import datetime_at_period
 from nucypher.cli.actions.auth import get_client_password, get_nucypher_password
 from nucypher.cli.actions.configure import (
     destroy_configuration,
     handle_missing_configuration_file,
-    get_or_update_configuration
+    get_or_update_configuration,
+    collect_worker_ip_address
 )
+from nucypher.cli.actions.configure import forget as forget_nodes, perform_startup_ip_check
 from nucypher.cli.actions.select import select_client_account, select_config_file, select_network
 from nucypher.cli.commands.deploy import option_gas_strategy
 from nucypher.cli.config import group_general_config
 from nucypher.cli.literature import (
-    CONFIRMING_ACTIVITY_NOW,
     DEVELOPMENT_MODE_WARNING,
     FORCE_MODE_WARNING,
+    SUCCESSFUL_MANUALLY_SAVE_METADATA,
     SUCCESSFUL_CONFIRM_ACTIVITY,
-    SUCCESSFUL_MANUALLY_SAVE_METADATA
+    CONFIRMING_ACTIVITY_NOW
 )
 from nucypher.cli.options import (
     group_options,
@@ -50,7 +49,6 @@ from nucypher.cli.options import (
     option_dry_run,
     option_federated_only,
     option_force,
-    option_geth,
     option_light,
     option_min_stake,
     option_network,
@@ -59,21 +57,19 @@ from nucypher.cli.options import (
     option_registry_filepath,
     option_signer_uri,
     option_teacher_uri,
-    option_lonely
+    option_lonely,
+    option_max_gas_price
 )
 from nucypher.cli.painting.help import paint_new_installation_help
 from nucypher.cli.painting.transactions import paint_receipt_summary
-from nucypher.cli.processes import get_geth_provider_process
-from nucypher.cli.types import EIP55_CHECKSUM_ADDRESS, NETWORK_PORT
+from nucypher.cli.types import EIP55_CHECKSUM_ADDRESS, NETWORK_PORT, WORKER_IP
 from nucypher.cli.utils import make_cli_character, setup_emitter
 from nucypher.config.characters import UrsulaConfiguration
 from nucypher.config.constants import (
     NUCYPHER_ENVVAR_WORKER_ETH_PASSWORD,
-    NUCYPHER_ENVVAR_WORKER_IP_ADDRESS,
     TEMPORARY_DOMAIN
 )
 from nucypher.config.keyring import NucypherKeyring
-from nucypher.utilities.networking import determine_external_ip_address
 
 
 class UrsulaConfigOptions:
@@ -81,38 +77,29 @@ class UrsulaConfigOptions:
     __option_name__ = 'config_options'
 
     def __init__(self,
-                 geth,
-                 provider_uri,
-                 worker_address,
-                 federated_only,
-                 rest_host,
-                 rest_port,
-                 db_filepath,
-                 network,
-                 registry_filepath,
-                 dev,
-                 poa,
-                 light,
-                 gas_strategy,
-                 signer_uri,
-                 availability_check,
+                 provider_uri: str,
+                 worker_address: str,
+                 federated_only: bool,
+                 rest_host: str,
+                 rest_port: int,
+                 db_filepath: str,
+                 network: str,
+                 registry_filepath: str,
+                 dev: bool,
+                 poa: bool,
+                 light: bool,
+                 gas_strategy: str,
+                 max_gas_price: int,  # gwei
+                 signer_uri: str,
+                 availability_check: bool,
                  lonely: bool
                  ):
 
         if federated_only:
-            if geth:
-                raise click.BadOptionUsage(option_name="--geth", message="--geth cannot be used in federated mode.")
-
             if registry_filepath:
                 raise click.BadOptionUsage(option_name="--registry-filepath",
                                            message=f"--registry-filepath cannot be used in federated mode.")
 
-        eth_node = NO_BLOCKCHAIN_CONNECTION
-        if geth:
-            eth_node = get_geth_provider_process()
-            provider_uri = eth_node.provider_uri(scheme='file')
-
-        self.eth_node = eth_node
         self.provider_uri = provider_uri
         self.signer_uri = signer_uri
         self.worker_address = worker_address
@@ -126,6 +113,7 @@ class UrsulaConfigOptions:
         self.poa = poa
         self.light = light
         self.gas_strategy = gas_strategy
+        self.max_gas_price = max_gas_price
         self.availability_check = availability_check
         self.lonely = lonely
 
@@ -138,10 +126,10 @@ class UrsulaConfigOptions:
                 poa=self.poa,
                 light=self.light,
                 registry_filepath=self.registry_filepath,
-                provider_process=self.eth_node,
                 provider_uri=self.provider_uri,
                 signer_uri=self.signer_uri,
                 gas_strategy=self.gas_strategy,
+                max_gas_price=self.max_gas_price,
                 checksum_address=self.worker_address,
                 federated_only=self.federated_only,
                 rest_host=self.rest_host,
@@ -156,10 +144,10 @@ class UrsulaConfigOptions:
                     filepath=config_file,
                     domain=self.domain,
                     registry_filepath=self.registry_filepath,
-                    provider_process=self.eth_node,
                     provider_uri=self.provider_uri,
                     signer_uri=self.signer_uri,
                     gas_strategy=self.gas_strategy,
+                    max_gas_price=self.max_gas_price,
                     rest_host=self.rest_host,
                     rest_port=self.rest_port,
                     db_filepath=self.db_filepath,
@@ -189,27 +177,23 @@ class UrsulaConfigOptions:
                                                        provider_uri=self.provider_uri,
                                                        signer_uri=self.signer_uri)
 
-        rest_host = self.rest_host
-        if not rest_host:
-            rest_host = os.environ.get(NUCYPHER_ENVVAR_WORKER_IP_ADDRESS)
-            if not rest_host:
-                # TODO: Something less centralized... :-(
-                # TODO: Ask Ursulas instead
-                rest_host = determine_external_ip_address(emitter, force=force)
+        # Resolve rest host
+        if not self.rest_host:
+            self.rest_host = collect_worker_ip_address(emitter, network=self.domain, force=force)
 
         return UrsulaConfiguration.generate(password=get_nucypher_password(confirm=True),
                                             config_root=config_root,
-                                            rest_host=rest_host,
+                                            rest_host=self.rest_host,
                                             rest_port=self.rest_port,
                                             db_filepath=self.db_filepath,
                                             domain=self.domain,
                                             federated_only=self.federated_only,
                                             worker_address=worker_address,
                                             registry_filepath=self.registry_filepath,
-                                            provider_process=self.eth_node,
                                             provider_uri=self.provider_uri,
                                             signer_uri=self.signer_uri,
                                             gas_strategy=self.gas_strategy,
+                                            max_gas_price=self.max_gas_price,
                                             poa=self.poa,
                                             light=self.light,
                                             availability_check=self.availability_check)
@@ -225,6 +209,7 @@ class UrsulaConfigOptions:
                        provider_uri=self.provider_uri,
                        signer_uri=self.signer_uri,
                        gas_strategy=self.gas_strategy,
+                       max_gas_price=self.max_gas_price,
                        poa=self.poa,
                        light=self.light,
                        availability_check=self.availability_check)
@@ -235,16 +220,16 @@ class UrsulaConfigOptions:
 
 group_config_options = group_options(
     UrsulaConfigOptions,
-    geth=option_geth,
     provider_uri=option_provider_uri(),
     signer_uri=option_signer_uri,
     gas_strategy=option_gas_strategy,
+    max_gas_price=option_max_gas_price,
     worker_address=click.option('--worker-address', help="Run the worker-ursula with a specified address", type=EIP55_CHECKSUM_ADDRESS),
     federated_only=option_federated_only,
-    rest_host=click.option('--rest-host', help="The host IP address to run Ursula network services on", type=click.STRING),
+    rest_host=click.option('--rest-host', help="The host IP address to run Ursula network services on", type=WORKER_IP),
     rest_port=click.option('--rest-port', help="The host port to run Ursula network services on", type=NETWORK_PORT),
     db_filepath=option_db_filepath,
-    network=option_network(),
+    network=option_network(default=NetworksInventory.DEFAULT),
     registry_filepath=option_registry_filepath,
     poa=option_poa,
     light=option_light,
@@ -312,9 +297,7 @@ def ursula():
 @option_config_root
 @group_general_config
 def init(general_config, config_options, force, config_root):
-    """
-    Create a new Ursula node configuration.
-    """
+    """Create a new Ursula node configuration."""
     emitter = setup_emitter(general_config, config_options.worker_address)
     _pre_launch_warnings(emitter, dev=None, force=force)
     if not config_root:
@@ -331,9 +314,7 @@ def init(general_config, config_options, force, config_root):
 @option_force
 @group_general_config
 def destroy(general_config, config_options, config_file, force):
-    """
-    Delete Ursula node configuration.
-    """
+    """Delete Ursula node configuration."""
     emitter = setup_emitter(general_config, config_options.worker_address)
     _pre_launch_warnings(emitter, dev=config_options.dev, force=force)
     if not config_file:
@@ -360,6 +341,7 @@ def forget(general_config, config_options, config_file):
 @group_character_options
 @option_config_file
 @option_dry_run
+@option_force
 @group_general_config
 @click.option('--interactive', '-I', help="Run interactively", is_flag=True, default=False)
 @click.option('--prometheus', help="Run the ursula prometheus exporter", is_flag=True, default=False)
@@ -367,29 +349,30 @@ def forget(general_config, config_options, config_file):
 @click.option("--metrics-listen-address", help="Run a prometheus metrics exporter on specified IP address", default='')
 @click.option("--metrics-prefix", help="Create metrics params with specified prefix", default="ursula")
 @click.option("--metrics-interval", help="The frequency of metrics collection", type=click.INT, default=90)
-def run(general_config, character_options, config_file, interactive, dry_run, prometheus, metrics_port, metrics_listen_address, metrics_prefix, metrics_interval):
+@click.option("--ip-checkup/--no-ip-checkup", help="Verify external IP matches configuration", default=True)
+def run(general_config, character_options, config_file, interactive, dry_run, prometheus, metrics_port,
+        metrics_listen_address, metrics_prefix, metrics_interval, force, ip_checkup):
     """Run an "Ursula" node."""
 
     worker_address = character_options.config_options.worker_address
     emitter = setup_emitter(general_config)
-    _pre_launch_warnings(emitter, dev=character_options.config_options.dev, force=None)
+    dev_mode = character_options.config_options.dev
+    lonely = character_options.config_options.lonely
 
-    if not character_options.config_options.dev and not config_file:
+    if prometheus and not metrics_port:
+        # Require metrics port when using prometheus
+        raise click.BadOptionUsage(option_name='metrics-port',
+                                   message='--metrics-port is required when using --prometheus')
+
+    _pre_launch_warnings(emitter, dev=dev_mode, force=None)
+
+    if not config_file and not dev_mode:
         config_file = select_config_file(emitter=emitter,
                                          checksum_address=worker_address,
                                          config_class=UrsulaConfiguration)
 
-    ursula_config, URSULA = character_options.create_character(emitter=emitter,
-                                                               config_file=config_file,
-                                                               json_ipc=general_config.json_ipc)
-
     prometheus_config: 'PrometheusMetricsConfig' = None
-    if prometheus:
-        # ensure metrics port is provided
-        if not metrics_port:
-            raise click.BadOptionUsage(option_name='metrics-port',
-                                       message='--metrics-port is required when using --prometheus')
-
+    if prometheus and not dev_mode:
         # Locally scoped to prevent import without prometheus explicitly installed
         from nucypher.utilities.prometheus.metrics import PrometheusMetricsConfig
         prometheus_config = PrometheusMetricsConfig(port=metrics_port,
@@ -397,12 +380,21 @@ def run(general_config, character_options, config_file, interactive, dry_run, pr
                                                     listen_address=metrics_listen_address,
                                                     collection_interval=metrics_interval)
 
-    # TODO should we just not call run at all for "dry_run"
+    ursula_config, URSULA = character_options.create_character(emitter=emitter,
+                                                               config_file=config_file,
+                                                               json_ipc=general_config.json_ipc)
+
+
+    if ip_checkup and not (dev_mode or lonely):
+        # Always skip startup IP checks for dev and lonely modes.
+        perform_startup_ip_check(emitter=emitter, ursula=URSULA, force=force)
+
     try:
         URSULA.run(emitter=emitter,
                    start_reactor=not dry_run,
                    interactive=interactive,
-                   prometheus_config=prometheus_config)
+                   prometheus_config=prometheus_config,
+                   preflight=not dev_mode)
     finally:
         if dry_run:
             URSULA.stop()
@@ -422,50 +414,26 @@ def save_metadata(general_config, character_options, config_file):
 
 
 @ursula.command()
+@click.argument('action', required=False)
 @group_config_options
 @option_config_file
 @group_general_config
-def config(general_config, config_options, config_file):
+@option_force
+def config(general_config, config_options, config_file, force, action):
     """View and optionally update the Ursula node's configuration."""
     emitter = setup_emitter(general_config, config_options.worker_address)
     if not config_file:
         config_file = select_config_file(emitter=emitter,
                                          checksum_address=config_options.worker_address,
                                          config_class=UrsulaConfiguration)
+    if action == 'ip-address':
+        rest_host = collect_worker_ip_address(emitter=emitter, network=config_options.domain, force=force)
+        config_options.rest_host = rest_host
     updates = config_options.get_updates()
     get_or_update_configuration(emitter=emitter,
                                 config_class=UrsulaConfiguration,
                                 filepath=config_file,
                                 updates=updates)
-
-
-@ursula.command(name='commit-next', hidden=True)
-@group_character_options
-@option_config_file
-@group_general_config
-def commit_to_next_period(general_config, character_options, config_file):
-    """Manually make a commitment to the next period."""
-
-    # Setup
-    emitter = setup_emitter(general_config, character_options.config_options.worker_address)
-    _pre_launch_warnings(emitter, dev=character_options.config_options.dev, force=None)
-    _, URSULA = character_options.create_character(emitter, config_file, general_config.json_ipc, load_seednodes=False)
-
-    committed_period = URSULA.staking_agent.get_current_period() + 1
-    click.echo(CONFIRMING_ACTIVITY_NOW.format(committed_period=committed_period), color='blue')
-    receipt = URSULA.commit_to_next_period(fire_and_forget=False)
-
-    economics = EconomicsFactory.get_economics(registry=URSULA.registry)
-    date = datetime_at_period(period=committed_period, seconds_per_period=economics.seconds_per_period)
-
-    # TODO: Double-check dates here
-    message = SUCCESSFUL_CONFIRM_ACTIVITY.format(committed_period=committed_period, date=date)
-    emitter.echo(message, bold=True, color='blue')
-    paint_receipt_summary(emitter=emitter,
-                          receipt=receipt,
-                          chain_name=URSULA.staking_agent.blockchain.client.chain_name)
-
-    # TODO: Check CommitmentMade event (see #1193)
 
 
 def _pre_launch_warnings(emitter, dev, force):

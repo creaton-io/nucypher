@@ -39,32 +39,37 @@ class UrsulaConfiguration(CharacterConfiguration):
     CHARACTER_CLASS = Ursula
     NAME = CHARACTER_CLASS.__name__.lower()
 
-    DEFAULT_REST_HOST = '127.0.0.1'
     DEFAULT_REST_PORT = 9151
+    DEFAULT_DEVELOPMENT_REST_HOST = '127.0.0.1'
     DEFAULT_DEVELOPMENT_REST_PORT = 10151
     __DEFAULT_TLS_CURVE = ec.SECP384R1
-    DEFAULT_DB_NAME = '{}.db'.format(NAME)
+    DEFAULT_DB_NAME = f'{NAME}.db'
     DEFAULT_AVAILABILITY_CHECKS = False
     LOCAL_SIGNERS_ALLOWED = True
 
     def __init__(self,
+                 rest_host: str = None,
                  worker_address: str = None,
                  dev_mode: bool = False,
                  db_filepath: str = None,
-                 rest_host: str = None,
                  rest_port: int = None,
                  tls_curve: EllipticCurve = None,
                  certificate: Certificate = None,
                  availability_check: bool = None,
                  *args, **kwargs) -> None:
 
-        if not rest_port:
-            if dev_mode:
+        if dev_mode:
+            rest_host = rest_host or self.DEFAULT_DEVELOPMENT_REST_HOST
+            if not rest_port:
                 rest_port = self.DEFAULT_DEVELOPMENT_REST_PORT
-            else:
+        else:
+            if not rest_host:
+                raise ValueError('rest_host is required for live workers.')
+            if not rest_port:
                 rest_port = self.DEFAULT_REST_PORT
+
         self.rest_port = rest_port
-        self.rest_host = rest_host or self.DEFAULT_REST_HOST
+        self.rest_host = rest_host
         self.tls_curve = tls_curve or self.__DEFAULT_TLS_CURVE
         self.certificate = certificate
         self.db_filepath = db_filepath or UNINITIALIZED_CONFIGURATION
@@ -152,11 +157,22 @@ class AliceConfiguration(CharacterConfiguration):
     DEFAULT_M = 2
     DEFAULT_N = 3
 
+    DEFAULT_STORE_POLICIES = True
+    DEFAULT_STORE_CARDS = True
+
+    _CONFIG_FIELDS = (
+        *CharacterConfiguration._CONFIG_FIELDS,
+        'store_policies',
+        'store_cards'
+    )
+
     def __init__(self,
                  m: int = None,
                  n: int = None,
                  rate: int = None,
                  duration_periods: int = None,
+                 store_policies: bool = DEFAULT_STORE_POLICIES,
+                 store_cards: bool = DEFAULT_STORE_CARDS,
                  *args, **kwargs):
 
         super().__init__(*args, **kwargs)
@@ -167,8 +183,16 @@ class AliceConfiguration(CharacterConfiguration):
         self.rate = rate
         self.duration_periods = duration_periods
 
+        self.store_policies = store_policies
+        self.store_cards = store_cards
+
     def static_payload(self) -> dict:
-        payload = dict(m=self.m, n=self.n)
+        payload = dict(
+            m=self.m,
+            n=self.n,
+            store_policies=self.store_policies,
+            store_cards=self.store_cards
+        )
         if not self.federated_only:
             if self.rate:
                 payload['rate'] = self.rate
@@ -188,14 +212,36 @@ class BobConfiguration(CharacterConfiguration):
 
     CHARACTER_CLASS = Bob
     NAME = CHARACTER_CLASS.__name__.lower()
-
     DEFAULT_CONTROLLER_PORT = 7151
+    DEFFAULT_STORE_POLICIES = True
+    DEFAULT_STORE_CARDS = True
+
+    _CONFIG_FIELDS = (
+        *CharacterConfiguration._CONFIG_FIELDS,
+        'store_policies',
+        'store_cards'
+    )
+
+    def __init__(self,
+                 store_policies: bool = DEFFAULT_STORE_POLICIES,
+                 store_cards: bool = DEFAULT_STORE_CARDS,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.store_policies = store_policies
+        self.store_cards = store_cards
 
     def write_keyring(self, password: str, **generation_kwargs) -> NucypherKeyring:
         return super().write_keyring(password=password,
                                      encrypting=True,
                                      rest=False,
                                      **generation_kwargs)
+
+    def static_payload(self) -> dict:
+        payload = dict(
+            store_policies=self.store_policies,
+            store_cards=self.store_cards
+        )
+        return {**super().static_payload(), **payload}
 
 
 class FelixConfiguration(CharacterConfiguration):

@@ -27,12 +27,12 @@ from nucypher.config.constants import NUCYPHER_ENVVAR_KEYRING_PASSWORD, NUCYPHER
     TEMPORARY_DOMAIN
 from tests.constants import (FAKE_PASSWORD_CONFIRMED, INSECURE_DEVELOPMENT_PASSWORD, MOCK_CUSTOM_INSTALLATION_PATH,
                              MOCK_IP_ADDRESS,
-                             TEST_PROVIDER_URI)
+                             TEST_PROVIDER_URI, YES)
 
 CONFIG_CLASSES = (AliceConfiguration, BobConfiguration, UrsulaConfiguration)
 
 
-ENV = {NUCYPHER_ENVVAR_WORKER_IP_ADDRESS: MOCK_IP_ADDRESS,
+ENV = {NUCYPHER_ENVVAR_WORKER_IP_ADDRESS: MOCK_IP_ADDRESS,  # TODO: Remove this #2512
        NUCYPHER_ENVVAR_KEYRING_PASSWORD: INSECURE_DEVELOPMENT_PASSWORD}
 
 
@@ -46,12 +46,15 @@ def test_initialize_via_cli(config_class, custom_filepath, click_runner, monkeyp
                  '--federated-only',
                  '--config-root', custom_filepath)
 
+    if config_class == UrsulaConfiguration:
+        init_args += ('--rest-host', MOCK_IP_ADDRESS)
+
     result = click_runner.invoke(nucypher_cli,
                                  init_args,
-                                 input=FAKE_PASSWORD_CONFIRMED,
+                                 input=FAKE_PASSWORD_CONFIRMED + YES,
                                  catch_exceptions=False,
                                  env=ENV)
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
 
     # CLI Output
     assert str(MOCK_CUSTOM_INSTALLATION_PATH) in result.output, "Configuration not in system temporary directory"

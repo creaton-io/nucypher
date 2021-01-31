@@ -105,9 +105,9 @@ Whitepapers
     *by Michael Egorov, MacLane Wilkison, Arjun Hassard - NuCypher*
 
 
-    https://github.com/nucypher/mining-paper/blob/master/2_phase_minting_schedule/twophase_subsidy_model.pdf
+    https://github.com/nucypher/whitepaper/blob/master/economics/pricing_protocol/NuCypher_Network__Pricing_Protocol_Economics.pdf
 
-    *"Temporally equitable subsidies: a two-phase token minting schedule"*
+    *"NuCypher Network: Pricing Protocol & Economics"*
     *by Arjun Hassard - NuCypher*
 
 
@@ -170,6 +170,13 @@ Whitepapers
    api/nucypher.datastore
    api/nucypher.crypto
    api/nucypher.acumen
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+   :caption: Contracts API
+
+   contracts_api/index
 
 .. toctree::
    :maxdepth: 1

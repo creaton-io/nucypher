@@ -16,17 +16,20 @@ The answers in the FAQ regularly reference the network characters "**Alice**," "
 General
 -------
 
+.. _faq-testnet:
+
 Q: What is the network name for NuCypher's testnet?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The network name for testnet is ``ibex``.
+NuCypher currently has two testnets available, each of them with different goals:
+
+* ``lynx``: Public Long-Term Support testnet, intended as a stable playground for network users (e.g., Alices wishing to create sharing policies). Running on Ethereum Goerli testnet.
+* ``ibex``: Public testnet, intended as a playground for stakers and node operators (e.g., learning how to create and manage stakes, setting up a node), as well as for internal development purposes. Running on Ethereun Rinkeby testnet.
 
 Q: How long is a period?
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 1 period is 24 hours. Periods begin at midnight UTC.
-
-
 
 
 Using the Network
@@ -142,7 +145,7 @@ Inflation Rewards (NU) and Policy Fees (ETH).
 Q: How are Policy Fees (ETH) determined?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The fee is calculated based on each period committed to and the number of policies that the Ursula is enforcing.
+The amount of fees a staker can earn in a given period is determined by multiple factors, including (1) the minimum fee rate set by the staker, (2) the number of active policies issued by users of the network to that staker, and (3) whether the staker has previously committed to being available for that period. See `Service Fees (Pricing) <https://docs.nucypher.com/en/latest/architecture/service_fees.html>`_ for details.
 
 Q: How many Ursulas per period collect Inflation rewards (NU)?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -258,7 +261,9 @@ or `systemd <https://docs.nucypher.com/en/latest/guides/installation_guide.html#
 Q: When installing on Docker, what do I input for <NETWORK NAME>?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The network name for testnet is ``ibex``.
+Use ``mainnet`` if you want to interact with the main NuCypher network,
+and either ``lynx`` or ``ibex`` in case you want to use one of our testnets.
+Go :ref:`here <faq-testnet>` to read more about the difference between both testnets.
 
 Q: How can I check for currently available staking rewards?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -314,10 +319,10 @@ A symbol which represents your node's view of the network. It is just a
 graphic checksum, so a minor change in the fleet (e.g., a new node joins, a node disappears, etc.)
 will produce a completely different fleet state symbol. A node can have a
 different fleet state than others, which may indicate that a different number of peers are accessible from
-that node's global position, network configuration, etc..
+that node's global position, network configuration, etc.
 
-Q: Why do I get `NET::ERR_CERT_INVALID` when loading the Ursula node status page?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Q: Why do I get ``NET::ERR_CERT_INVALID`` when loading the Ursula node status page?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The status page uses a self-signed certificate, but browsers don’t like it.
 You can usually proceed to the page anyway. If not, try using a different browser.
@@ -363,7 +368,7 @@ Delegating stake and/or work to a 3rd party is a good option for those who are n
 of staking and running a node and/or are concerned about gas costs relative to stake size (e.g. small stakers).
 
 If you are comfortable with technical requirements of staking or wish to implement a sophisticated staking configuration
-(e.g. restake toggles,  stake extensions, sub-stakes , adding stake, etc.) it may not be the right option.
+(e.g. restake toggles,  stake extensions, sub-stakes, adding stake, etc.) it may not be the right option.
 
 
 Q: Can I manage my own stake settings when participating in WorkLock through CoinList?
@@ -373,3 +378,53 @@ You do not have the ability to change staking configs with CoinList.
 There is one setting only – 6 month duration, restake on, winddown on – for all CoinList participants.
 
 See NuCypher coinlist for more details: `CoinList <https://coinlist.co/asset/nucypher>`_
+
+
+Q: How does my worker node choose what price to use for transactions? Can I control this?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When sending a transaction, your worker node automatically chooses the gas price
+using a `gas strategy <https://web3py.readthedocs.io/en/stable/gas_price.html>`_.
+
+We currently offer three types of gas strategies,
+based on the approximate confirmation time:
+
+- ``slow``: Confirmation expected within **one hour**.
+- ``medium``: Confirmation expected within **five minutes**.
+- ``fast``: Confirmation expected within **one minute**.
+
+Note that the times are an approximation, and the confirmation time may vary
+when gas prices experience more volatility.
+In such situations, transactions may not be mined within the expected time.
+However, your node keeps track of the transactions and is capable of automatically
+sending replacement transactions to adjust to a scenario with new prices.
+In any case, we recommend that you monitor your node to be sure that the
+transactions are being sent and confirmed correctly.
+
+You can set a gas strategy using the Ursula configuration command.
+For example, the following command sets the ``medium`` gas strategy:
+
+.. code:: bash
+
+    (nucypher)$ nucypher ursula config --gas-strategy medium
+
+
+There's an additional, advanced control mechanism for limiting the maximum
+gas price that your node can spend.  The ``--max-gas-price`` flag can be used to configure limit in `gwei`.
+This is complementary to the gas strategy that you may have configured.
+
+.. code:: bash
+
+    (nucypher)$ nucypher ursula config --max-gas-price 50
+
+.. warning::
+
+    If you set a maximum limit and gas prices remain higher
+    than that limit, it's possible that your node will not get
+    the commitment transaction included in the blockchain.
+    This implies that you can miss some rewards.
+
+.. warning::
+
+    The maximum gas price limit is an experimental feature and may be changed
+    or removed in the future.

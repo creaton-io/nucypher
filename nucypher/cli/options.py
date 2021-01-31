@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+
 from collections import namedtuple
 
 import click
@@ -45,8 +46,9 @@ option_etherscan = click.option('--etherscan/--no-etherscan', help="Enable/disab
 option_event_name = click.option('--event-name', help="Specify an event by name", type=click.STRING)
 option_federated_only = click.option('--federated-only/--decentralized', '-F', help="Connect only to federated nodes", is_flag=True, default=None)
 option_force = click.option('--force', help="Don't ask for confirmation", is_flag=True)
-option_gas_price = click.option('--gas-price', help="Use this gas price (in GWEI)", type=GWEI)
-option_geth = click.option('--geth', '-G', help="Run using the built-in geth node", is_flag=True)
+option_gas_price = click.option('--gas-price', help="Set a static gas price (in GWEI)", type=GWEI)
+option_gas_strategy = click.option('--gas-strategy', help="Operate with a specified gas price strategy", type=click.STRING)  # TODO: GAS_STRATEGY_CHOICES
+option_max_gas_price = click.option('--max-gas-price', help="Maximum acceptable gas price (in GWEI)", type=GWEI)
 option_hw_wallet = click.option('--hw-wallet/--no-hw-wallet')
 option_light = click.option('--light', help="Indicate that node is light", is_flag=True, default=None)
 option_lonely = click.option('--lonely', help="Do not connect to seednodes", is_flag=True)
@@ -112,7 +114,7 @@ def option_message_kit(required: bool = False):
 
 
 def option_network(required: bool = False,
-                   default: str = None,  # TODO: NetworksInventory.DEFAULT is not a good default for the moment -- 2214
+                   default: str = None,  # NetworksInventory.DEFAULT is not a good global default (2214)
                    validate: bool = False):
     return click.option(
         '--network',

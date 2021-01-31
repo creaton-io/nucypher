@@ -33,9 +33,9 @@ from nucypher.config.characters import UrsulaConfiguration
 from nucypher.crypto.powers import TransactingPower
 from nucypher.policy.collections import WorkOrder, IndisputableEvidence
 from tests.constants import (
-    MOCK_URSULA_DB_FILEPATH,
     NUMBER_OF_URSULAS_IN_DEVELOPMENT_NETWORK
 )
+from tests.mock.datastore import MOCK_DB
 from umbral import pre
 from umbral.curvebn import CurveBN
 from umbral.keys import UmbralPrivateKey
@@ -77,7 +77,7 @@ def make_federated_ursulas(ursula_config: UrsulaConfiguration,
     for port in range(starting_port, starting_port+quantity):
 
         ursula = ursula_config.produce(rest_port=port + 100,
-                                       db_filepath=MOCK_URSULA_DB_FILEPATH,
+                                       db_filepath=MOCK_DB,
                                        **ursula_overrides)
 
         federated_ursulas.add(ursula)
@@ -98,7 +98,7 @@ def make_federated_ursulas(ursula_config: UrsulaConfiguration,
 def make_decentralized_ursulas(ursula_config: UrsulaConfiguration,
                                stakers_addresses: Iterable[str],
                                workers_addresses: Iterable[str],
-                               commit_to_next_period: bool = False,
+                               commit_now: bool = True,
                                **ursula_overrides) -> List[Ursula]:
 
     if not MOCK_KNOWN_URSULAS_CACHE:
@@ -112,19 +112,14 @@ def make_decentralized_ursulas(ursula_config: UrsulaConfiguration,
     for port, (staker_address, worker_address) in enumerate(stakers_and_workers, start=starting_port):
         ursula = ursula_config.produce(checksum_address=staker_address,
                                        worker_address=worker_address,
-                                       db_filepath=tempfile.mkdtemp(),
+                                       db_filepath=MOCK_DB,
                                        rest_port=port + 100,
-                                       # start_working_now=commit_to_next_period,  # FIXME: 2424
+                                       commit_now=commit_now,
                                        **ursula_overrides)
-        if commit_to_next_period:  # FIXME: 2424
-            # TODO: Is _crypto_power trying to be public?  Or is there a way to expose *something* public about TransactingPower?
-            # Do we need to revisit the concept of "public material"?  Or does this rightly belong as a method?
-            tx_power = ursula._crypto_power.power_ups(TransactingPower)
-            tx_power.activate()
-            ursula.commit_to_next_period()
 
         ursulas.append(ursula)
-        # Store this Ursula in our global cache.
+
+        # Store this Ursula in our global testing cache.
         port = ursula.rest_interface.port
         MOCK_KNOWN_URSULAS_CACHE[port] = ursula
 
@@ -136,7 +131,7 @@ def make_ursula_for_staker(staker: Staker,
                            blockchain: BlockchainInterface,
                            ursula_config: UrsulaConfiguration,
                            ursulas_to_learn_about: Optional[List[Ursula]] = None,
-                           commit_to_next_period: bool = False,
+                           commit_now: bool = True,
                            **ursula_overrides) -> Ursula:
 
     # Assign worker to this staker
@@ -146,7 +141,7 @@ def make_ursula_for_staker(staker: Staker,
                                         blockchain=blockchain,
                                         stakers_addresses=[staker.checksum_address],
                                         workers_addresses=[worker_address],
-                                        commit_to_next_period=commit_to_next_period,
+                                        commit_now=commit_now,
                                         **ursula_overrides).pop()
 
     for ursula_to_learn_about in (ursulas_to_learn_about or []):

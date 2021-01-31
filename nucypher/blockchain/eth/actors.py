@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+
 import csv
 import json
 import os
@@ -351,71 +352,6 @@ class ContractAdministrator(NucypherTokenActor):
         receipts = deployer.rollback()
         return receipts
 
-    def deploy_network_contracts(self,
-                                 interactive: bool = True,
-                                 emitter: StdoutEmitter = None,
-                                 etherscan: bool = False,
-                                 ignore_deployed: bool = False) -> dict:
-        """
-
-        :param interactive: If True, wait for keypress after each contract deployment
-        :param emitter: A console output emitter instance. If emitter is None, no output will be echoed to the console.
-        :param etherscan: Open deployed contracts in Etherscan
-        :param ignore_deployed: Ignore already deployed contracts if exist
-        :return: Returns a dictionary of deployment receipts keyed by contract name
-        """
-
-        if interactive and not emitter:
-            raise ValueError("'emitter' is a required keyword argument when interactive is True.")
-
-        deployment_receipts = dict()
-        gas_limit = None  # TODO: Gas management - #842
-
-        # deploy contracts
-        total_deployment_transactions = 0
-        for deployer_class in self.primary_deployer_classes:
-            total_deployment_transactions += len(deployer_class.deployment_steps)
-
-        first_iteration = True
-        with click.progressbar(length=total_deployment_transactions,
-                               label="Deployment progress",
-                               show_eta=False) as bar:
-            bar.short_limit = 0
-            for deployer_class in self.primary_deployer_classes:
-                if interactive and not first_iteration:
-                    click.pause(info=f"\nPress any key to continue with deployment of {deployer_class.contract_name}")
-
-                if emitter:
-                    emitter.echo(f"\nDeploying {deployer_class.contract_name} ...")
-                    bar._last_line = None
-                    bar.render_progress()
-
-                if deployer_class in self.standard_deployer_classes:
-                    receipts, deployer = self.deploy_contract(contract_name=deployer_class.contract_name,
-                                                              gas_limit=gas_limit,
-                                                              progress=bar,
-                                                              emitter=emitter)
-                else:
-                    receipts, deployer = self.deploy_contract(contract_name=deployer_class.contract_name,
-                                                              gas_limit=gas_limit,
-                                                              progress=bar,
-                                                              ignore_deployed=ignore_deployed,
-                                                              emitter=emitter)
-
-                if emitter:
-                    blockchain = BlockchainInterfaceFactory.get_interface()
-                    paint_contract_deployment(contract_name=deployer_class.contract_name,
-                                              receipts=receipts,
-                                              contract_address=deployer.contract_address,
-                                              emitter=emitter,
-                                              chain_name=blockchain.client.chain_name,
-                                              open_in_browser=etherscan)
-
-                deployment_receipts[deployer_class.contract_name] = receipts
-                first_iteration = False
-
-        return deployment_receipts
-
     def batch_deposits(self,
                        allocation_data_filepath: str,
                        interactive: bool = True,
@@ -492,7 +428,7 @@ class ContractAdministrator(NucypherTokenActor):
                         emitter.echo()
                         paint_receipt_summary(emitter=emitter,
                                               receipt=receipt,
-                                              chain_name=chain_name,
+                                              chain_name=chain_name,  # TODO: this variable might be unused
                                               transaction_type=f'batch_deposit_{number_of_deposits}_stakers')
 
                     batch_deposit_receipts.update({staker: {'batch_deposit': receipt} for staker in deposited_stakers})
@@ -1501,7 +1437,7 @@ class Worker(NucypherTokenActor):
                  is_me: bool,
                  work_tracker: WorkTracker = None,
                  worker_address: str = None,
-                 start_working_now: bool = True,
+                 commit_now: bool = False,
                  block_until_ready: bool = True,
                  *args, **kwargs):
 
@@ -1524,16 +1460,14 @@ class Worker(NucypherTokenActor):
         self.__start_time = WORKER_NOT_RUNNING
         self.__uptime_period = WORKER_NOT_RUNNING
 
-        # Workers cannot be started without being assigned a stake first.
         if is_me:
             if block_until_ready:
+                # Workers cannot be started before bonding.
                 self.block_until_ready()
-
-            if start_working_now:
-                self.stakes = StakeList(registry=self.registry, checksum_address=self.checksum_address)
-                self.stakes.refresh()
-                self.work_tracker = work_tracker or WorkTracker(worker=self)
-                self.work_tracker.start(act_now=start_working_now)
+            self.stakes = StakeList(registry=self.registry, checksum_address=self.checksum_address)
+            self.stakes.refresh()
+            self.work_tracker = work_tracker or WorkTracker(worker=self)
+            self.work_tracker.start(commit_now=commit_now)
 
     def block_until_ready(self, poll_rate: int = None, timeout: int = None, feedback_rate: int = None):
         """
@@ -1551,8 +1485,8 @@ class Worker(NucypherTokenActor):
         start = maya.now()
         last_provided_feedback = start
 
-        emitter = StdoutEmitter()  # TODO: Make injectable, or embed this logic into Ursula
-        emitter.message("Checking worker settings: waiting for bonding and funding ...", color='yellow')
+        emitter = StdoutEmitter()
+        emitter.message("Qualifying worker", color='yellow')
 
         funded, bonded = False, False
         while True:
@@ -1564,12 +1498,12 @@ class Worker(NucypherTokenActor):
             # Bonding
             if (not bonded) and (staking_address != NULL_ADDRESS):
                 bonded = True
-                emitter.message(f"    ✓ Worker is bonded to ({staking_address})!", color='green', bold=True)
+                emitter.message(f"✓ Worker is bonded to {staking_address}", color='green')
 
             # Balance
             if ether_balance and (not funded):
                 funded, balance = True, Web3.fromWei(ether_balance, 'ether')
-                emitter.message(f"    ✓ Worker is funded with {balance} ETH!", color='green', bold=True)
+                emitter.message(f"✓ Worker is funded with {balance} ETH", color='green')
 
             # Success and Escape
             if staking_address != NULL_ADDRESS and ether_balance:
@@ -1588,8 +1522,8 @@ class Worker(NucypherTokenActor):
                         waiting_for = "bonding and funding"
                     else:
                         waiting_for = "bonding" if not bonded else "funding"
-                    emitter.message(f"    ⓘ Worker not fully started - still waiting for {waiting_for} ...",
-                                    color='yellow')
+                    message = f"ⓘ  Worker startup is paused. Waiting for {waiting_for} ..."
+                    emitter.message(message, color='blue', bold=True)
                     last_provided_feedback = now
 
             # Crash on Timeout
@@ -1606,8 +1540,6 @@ class Worker(NucypherTokenActor):
 
             # Increment
             time.sleep(poll_rate)
-
-        emitter.message("✓ Worker settings confirmed", color='green')
 
     @property
     def eth_balance(self) -> Decimal:

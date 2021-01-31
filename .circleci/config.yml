@@ -172,6 +172,10 @@ workflows:
               only:
                 - main
     jobs:
+      - validate_reqs_files:
+          filters:
+            tags:
+              only: /.*/
       - pipenv_install_36:
           filters:
             tags:
@@ -184,10 +188,6 @@ workflows:
           filters:
             tags:
               only: /.*/
-      - validate_reqs_files:
-          filters:
-            tags:
-              only: /.*/
       - pip_install_37:
           filters:
             tags:
@@ -197,6 +197,14 @@ workflows:
             tags:
               only: /.*/
       - pip_install_38:
+          filters:
+            tags:
+              only: /.*/
+      - pipenv_install_39:
+          filters:
+            tags:
+              only: /.*/
+      - pip_install_39:
           filters:
             tags:
               only: /.*/
@@ -333,6 +341,12 @@ python_38_base: &python_38_base
   docker:
     - image: circleci/python:3.8
 
+python_39_base: &python_39_base
+  parallelism: 1
+  working_directory: ~/nucypher
+  docker:
+    - image: circleci/python:3.9
+
 commands:
 
   pipenv_install:
@@ -372,8 +386,11 @@ commands:
     description: "Install NuCypher with Pip"
     steps:
       - run:
-          name: Install Python Development Dependencies with Pip
-          command: pip3 install --user -e .[dev]
+          name: Install Python Development Dependencies with Pip (Workaround for problem with pip resolver. See 2493)
+          command: |
+            python -m pip install pip==20.2.4
+            pip3 --version
+            pip3 install --user -e .[dev]
       - run:
           name: Install Solidity Compiler
           command: python3 ./scripts/installation/install_solc.py
@@ -385,7 +402,7 @@ commands:
       - run: sudo chown -R circleci:circleci /usr/local/bin
       - run: sudo chown -R circleci:circleci /usr/local/lib/python3.7/site-packages
       - save_cache:
-          key: pip-v4-{{ .Branch }}-{{ checksum "Pipfile.lock" }}
+          key: pip-v6-{{ .Branch }}-{{ checksum "Pipfile.lock" }}
           paths:
             - "~/.local/bin"
             - "~/.local/lib/python3.7/site-packages"
@@ -400,7 +417,7 @@ commands:
       - run: sudo chown -R circleci:circleci /usr/local/bin
       - run: sudo chown -R circleci:circleci /usr/local/lib/python3.7/site-packages
       - restore_cache:  # ensure this step occurs *before* installing dependencies
-          key: pip-v4-{{ .Branch }}-{{ checksum "Pipfile.lock" }}
+          key: pip-v6-{{ .Branch }}-{{ checksum "Pipfile.lock" }}
       - restore_cache:
           key: solc-v2-{{ checksum "nucypher/blockchain/eth/sol/__conf__.py" }}
 
@@ -471,6 +488,8 @@ jobs:
     <<: *python_36_base
     steps:
       - checkout
+      - run: sudo chown -R circleci:circleci /usr/local/bin
+      - run: sudo chown -R circleci:circleci /usr/local/lib/python3.6/site-packages
       - pip_install
 
   pipenv_install_36:
@@ -500,6 +519,8 @@ jobs:
     <<: *python_38_base
     steps:
       - checkout
+      - run: sudo chown -R circleci:circleci /usr/local/bin
+      - run: sudo chown -R circleci:circleci /usr/local/lib/python3.8/site-packages
       - pip_install
 
   pipenv_install_38:
@@ -507,6 +528,21 @@ jobs:
     steps:
       - pipenv_install:
           python_version: "3.8"
+
+  # Python 3.9
+  pip_install_39:
+    <<: *python_39_base
+    steps:
+    - checkout
+    - run: sudo chown -R circleci:circleci /usr/local/bin
+    - run: sudo chown -R circleci:circleci /usr/local/lib/python3.9/site-packages
+    - pip_install
+
+  pipenv_install_39:
+    <<: *python_39_base
+    steps:
+    - pipenv_install:
+        python_version: "3.9"
 
   integration:
     <<: *python_37_base
@@ -659,6 +695,15 @@ jobs:
       - run:
           name: Run Requirements comparison
           command: ./scripts/circle/compare_reqs.sh
+      - run:
+          name: Prepare Requirement Files for Storage as Artifacts
+          command: |
+            mkdir -p /tmp/reqs
+            cp *requirements.txt /tmp/reqs
+          when: on_fail
+      - store_artifacts:
+          path: /tmp/reqs
+          destination: reqs
 
   estimate_gas:
     <<: *python_37_base
@@ -678,8 +723,11 @@ jobs:
     steps:
       - prepare_environment
       - run:
-          name: Install Documentation Build Dependencies
-          command: pip3 install --use-feature=2020-resolver --user .[docs]
+          name: Install Documentation Build Dependencies (Workaround for problem with pip resolver. See 2493)
+          command: |
+            python -m pip install pip==20.2.4
+            pip3 --version
+            pip3 install --user -r docs-requirements.txt .
       - run:
           name: Build Sphinx Documentation
           command: make docs
@@ -700,13 +748,13 @@ jobs:
   build_docker:
     working_directory: ~/nucypher
     docker:
-      - image: docker:18.06.1-ce-git
+      - image: cimg/python:3.8.6
     steps:
       - checkout
       - setup_remote_docker
       - restore_cache:
           keys:
-            - v1-{{ .Branch }}
+            - v2-{{ .Branch }}-{{ arch }}
           paths:
             - ~/docker/nucypher.tar
       - run:
@@ -724,7 +772,7 @@ jobs:
             mkdir -p ~/docker
             docker save -o ~/docker/nucypher.tar nucypher/nucypher:circle
       - save_cache:
-          key: v1-{{ .Branch }}-{{ epoch }}
+          key: v2-{{ .Branch }}-{{ arch }}-{{ epoch }}
           paths:
             - ~/docker/nucypher.tar
 
@@ -758,13 +806,13 @@ jobs:
   publish_docker_experimental:
     working_directory: ~/nucypher
     docker:
-      - image: docker:18.06.1-ce-git
+      - image: cimg/python:3.8.6
     steps:
       - checkout
       - setup_remote_docker
       - restore_cache:
           keys:
-            - v1-{{ .Branch }}
+            - v2-{{ .Branch }}-{{ arch }}
           paths:
             - ~/docker/nucypher.tar
       - run:
@@ -782,13 +830,13 @@ jobs:
   publish_docker:
     working_directory: ~/nucypher
     docker:
-      - image: docker:18.06.1-ce-git
+      - image: cimg/python:3.8.6
     steps:
       - checkout
       - setup_remote_docker
       - restore_cache:
           keys:
-            - v1-{{ .Branch }}
+            - v2-{{ .Branch }}-{{ arch }}
           paths:
             - ~/docker/nucypher.tar
       - run:

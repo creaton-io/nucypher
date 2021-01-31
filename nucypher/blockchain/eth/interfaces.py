@@ -18,13 +18,10 @@ along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 import math
 import os
 import pprint
-import threading
-import time
 from typing import Callable, NamedTuple, Tuple, Union, Optional
 from typing import List
 from urllib.parse import urlparse
 
-import click
 import requests
 from eth_tester import EthereumTester
 from eth_tester.exceptions import TransactionFailed as TestTransactionFailed
@@ -42,7 +39,6 @@ from constant_sorrow.constants import (
     INSUFFICIENT_ETH,
     NO_BLOCKCHAIN_CONNECTION,
     NO_COMPILATION_PERFORMED,
-    NO_PROVIDER_PROCESS,
     READ_ONLY_INTERFACE,
     UNKNOWN_TX_STATUS
 )
@@ -54,7 +50,6 @@ from nucypher.blockchain.eth.providers import (
     _get_auto_provider,
     _get_mock_test_provider,
     _get_pyevm_test_provider,
-    _get_test_geth_parity_provider,
     _get_websocket_provider
 )
 from nucypher.blockchain.eth.registry import BaseContractRegistry
@@ -64,7 +59,11 @@ from nucypher.blockchain.eth.sol.compile.types import SourceBundle
 from nucypher.blockchain.eth.utils import get_transaction_name, prettify_eth_amount
 from nucypher.characters.control.emitters import JSONRPCStdoutEmitter, StdoutEmitter
 from nucypher.utilities.ethereum import encode_constructor_arguments
-from nucypher.utilities.gas_strategies import datafeed_fallback_gas_price_strategy, WEB3_GAS_STRATEGIES
+from nucypher.utilities.gas_strategies import (
+    construct_datafeed_median_strategy,
+    max_price_gas_strategy_wrapper,
+    WEB3_GAS_STRATEGIES
+)
 from nucypher.utilities.logging import GlobalLoggerSettings, Logger
 
 Web3Providers = Union[IPCProvider, WebsocketProvider, HTTPProvider, EthereumTester]  # TODO: Move to types.py
@@ -85,7 +84,6 @@ class BlockchainInterface:
     DEFAULT_GAS_STRATEGY = 'fast'
     GAS_STRATEGIES = WEB3_GAS_STRATEGIES
 
-    process = NO_PROVIDER_PROCESS.bool_value(False)
     Web3 = Web3  # TODO: This is name-shadowing the actual Web3. Is this intentional?
 
     _CONTRACT_FACTORY = VersionedContract
@@ -111,7 +109,7 @@ class BlockchainInterface:
 
     class TransactionFailed(InterfaceError):
 
-        IPC_CODE = -32000  # (geth)
+        IPC_CODE = -32000
 
         def __init__(self,
                      message: str,
@@ -133,7 +131,7 @@ class BlockchainInterface:
         def default(self) -> str:
             sender = self.payload["from"]
             message = f'{self.name} from {sender[:6]}... \n' \
-                      f'Sender balance: {self.get_balance()} ETH \n' \
+                      f'Sender balance: {prettify_eth_amount(self.get_balance())} \n' \
                       f'Reason: {self.base_message} \n' \
                       f'Transaction: {self.payload}'
             return message
@@ -157,13 +155,13 @@ class BlockchainInterface:
             return message
 
     def __init__(self,
-                 emitter = None,  # TODO # 1754
+                 emitter=None,  # TODO # 1754
                  poa: bool = None,
                  light: bool = False,
-                 provider_process=NO_PROVIDER_PROCESS,
                  provider_uri: str = NO_BLOCKCHAIN_CONNECTION,
                  provider: BaseProvider = NO_BLOCKCHAIN_CONNECTION,
-                 gas_strategy: Optional[Union[str, Callable]] = None):
+                 gas_strategy: Optional[Union[str, Callable]] = None,
+                 max_gas_price: Optional[int] = None):
 
         """
         TODO: #1502 - Move to API docs.
@@ -232,26 +230,23 @@ class BlockchainInterface:
         self.poa = poa
         self.provider_uri = provider_uri
         self._provider = provider
-        self._provider_process = provider_process
         self.w3 = NO_BLOCKCHAIN_CONNECTION
         self.client = NO_BLOCKCHAIN_CONNECTION
         self.transacting_power = READ_ONLY_INTERFACE
         self.is_light = light
+
+        # FIXME: Not ready to give users total flexibility. Let's stick for the moment to known values. See #2447
+        if gas_strategy not in ('slow', 'medium', 'fast', 'free', None):  # FIXME: What is 'None' doing here?
+            raise ValueError(f"'{gas_strategy}' is an invalid gas strategy")
         self.gas_strategy = gas_strategy or self.DEFAULT_GAS_STRATEGY
+        self.max_gas_price = max_gas_price
 
     def __repr__(self):
         r = '{name}({uri})'.format(name=self.__class__.__name__, uri=self.provider_uri)
         return r
 
-    @classmethod
-    def from_dict(cls, payload: dict, **overrides) -> 'BlockchainInterface':
-        payload.update({k: v for k, v in overrides.items() if v is not None})
-        blockchain = cls(**payload)
-        return blockchain
-
-    def to_dict(self) -> dict:
-        payload = dict(provider_uri=self.provider_uri, poa=self.poa, light=self.is_light)
-        return payload
+    def get_blocktime(self):
+        return self.client.get_blocktime()
 
     @property
     def is_connected(self) -> bool:
@@ -290,32 +285,38 @@ class BlockchainInterface:
         # self.client.add_middleware(middleware.latest_block_based_cache_middleware)  # TODO: This line causes failed tests and nonce reuse in tests. See #2348.
         self.client.add_middleware(middleware.simple_cache_middleware)
 
-        self.set_gas_strategy()
+        self.configure_gas_strategy()
 
-    def set_gas_strategy(self, gas_strategy: Optional[Callable] = None):
+    def configure_gas_strategy(self, gas_strategy: Optional[Callable] = None) -> None:
+
         if gas_strategy:
             reported_gas_strategy = f"fixed/{gas_strategy.name}"
+
         elif isinstance(self.client, InfuraClient):
-            gas_strategy = datafeed_fallback_gas_price_strategy
-            self.gas_strategy = 'fast'
-            reported_gas_strategy = "datafeed/fast"
+            gas_strategy = construct_datafeed_median_strategy(speed=self.gas_strategy)
+            reported_gas_strategy = f"datafeed/{self.gas_strategy}"
+
         else:
             reported_gas_strategy = f"web3/{self.gas_strategy}"
             gas_strategy = self.get_gas_strategy(self.gas_strategy)
+
+        configuration_message = f"Using gas strategy '{reported_gas_strategy}'"
+
+        if self.max_gas_price:
+            __price = Web3.toWei(self.max_gas_price, 'gwei')  # from gwei to wei
+            gas_strategy = max_price_gas_strategy_wrapper(gas_strategy=gas_strategy, max_gas_price_wei=__price)
+            configuration_message += f", with a max price of {self.max_gas_price} gwei."
+
         self.client.set_gas_strategy(gas_strategy=gas_strategy)
         gwei_gas_price = Web3.fromWei(self.client.gas_price_for_transaction(), 'gwei')
-        self.log.debug(f"Using gas strategy '{reported_gas_strategy}'. "
-                       f"Currently, it returns a gas price of {gwei_gas_price} gwei")
+
+        self.log.info(configuration_message)
+        self.log.debug(f"Gas strategy currently reports a gas price of {gwei_gas_price} gwei.")
 
     def connect(self):
 
-        # Spawn child process
-        if self._provider_process:
-            self._provider_process.start()
-            provider_uri = self._provider_process.provider_uri(scheme='file')
-        else:
-            provider_uri = self.provider_uri
-            self.log.info(f"Using external Web3 Provider '{self.provider_uri}'")
+        provider_uri = self.provider_uri
+        self.log.info(f"Using external Web3 Provider '{self.provider_uri}'")
 
         # Attach Provider
         self._attach_provider(provider=self._provider, provider_uri=provider_uri)
@@ -335,51 +336,6 @@ class BlockchainInterface:
             self.attach_middleware()
 
         return self.is_connected
-
-    def sync(self, emitter=None) -> None:
-
-        sync_state = self.client.sync()
-        if emitter is not None:
-
-            emitter.echo(f"Syncing: {self.client.chain_name.capitalize()}. Waiting for sync to begin.", verbosity=1)
-
-            while not len(self.client.peers):
-                emitter.echo("waiting for peers...", verbosity=1)
-                time.sleep(5)
-
-            peer_count = len(self.client.peers)
-            emitter.echo(
-                f"Found {'an' if peer_count == 1 else peer_count} Ethereum peer{('s' if peer_count > 1 else '')}.",
-                verbosity=1)
-
-            try:
-                emitter.echo("Beginning sync...", verbosity=1)
-                initial_state = next(sync_state)
-            except StopIteration:  # will occur if no syncing needs to happen
-                emitter.echo("Local blockchain data is already synced.", verbosity=1)
-                return
-
-            prior_state = initial_state
-            total_blocks_to_sync = int(initial_state.get('highestBlock', 0)) - int(
-                initial_state.get('currentBlock', 0))
-            with click.progressbar(
-                    length=total_blocks_to_sync,
-                    label="sync progress",
-                    file=emitter.get_stream(verbosity=1)
-            ) as bar:
-                for syncdata in sync_state:
-                    if syncdata:
-                        blocks_accomplished = int(syncdata['currentBlock']) - int(
-                            prior_state.get('currentBlock', 0))
-                        bar.update(blocks_accomplished)
-                        prior_state = syncdata
-        else:
-            try:
-                for syncdata in sync_state:
-                    self.client.log.info(f"Syncing {syncdata['currentBlock']}/{syncdata['highestBlock']}")
-            except TypeError:  # it's already synced
-                return
-        return
 
     @property
     def provider(self) -> BaseProvider:
@@ -401,8 +357,6 @@ class BlockchainInterface:
             if uri_breakdown.scheme == 'tester':
                 providers = {
                     'pyevm': _get_pyevm_test_provider,
-                    'geth': _get_test_geth_parity_provider,
-                    'parity-ethereum': _get_test_geth_parity_provider,
                     'mock': _get_mock_test_provider
                 }
                 provider_scheme = uri_breakdown.netloc
@@ -449,29 +403,30 @@ class BlockchainInterface:
         # TODO: #1504 - Additional Handling of validation failures (gas limits, invalid fields, etc.)
         """
 
-        try:
-            # Assume this error is formatted as an IPC response
-            code, message = exception.args[0].values()
+        response = exception.args[0]
 
-        except (ValueError, IndexError, AttributeError):
+        # Assume this error is formatted as an RPC response
+        try:
+            code = int(response['code'])
+            message = response['message']
+        except Exception:
             # TODO: #1504 - Try even harder to determine if this is insufficient funds causing the issue,
             #               This may be best handled at the agent or actor layer for registry and token interactions.
             # Worst case scenario - raise the exception held in context implicitly
             raise exception
 
-        else:
-            if int(code) != cls.TransactionFailed.IPC_CODE:
-                # Only handle client-specific exceptions
-                # https://www.jsonrpc.org/specification Section 5.1
-                raise exception
+        if code != cls.TransactionFailed.IPC_CODE:
+            # Only handle client-specific exceptions
+            # https://www.jsonrpc.org/specification Section 5.1
+            raise exception
 
-            if logger:
-                logger.critical(message)  # simple context
+        if logger:
+            logger.critical(message)  # simple context
 
-            transaction_failed = cls.TransactionFailed(message=message,  # rich error (best case)
-                                                       contract_function=contract_function,
-                                                       transaction_dict=transaction_dict)
-            raise transaction_failed from exception
+        transaction_failed = cls.TransactionFailed(message=message,  # rich error (best case)
+                                                   contract_function=contract_function,
+                                                   transaction_dict=transaction_dict)
+        raise transaction_failed from exception
 
     def __log_transaction(self, transaction_dict: dict, contract_function: ContractFunction):
         """
@@ -542,7 +497,12 @@ class BlockchainInterface:
                                      use_pending_nonce=use_pending_nonce)
         self.__log_transaction(transaction_dict=payload, contract_function=contract_function)
         try:
-            transaction_dict = contract_function.buildTransaction(payload)  # Gas estimation occurs here
+            if 'gas' not in payload:
+                # As web3 buildTransaction() will estimate gas with block identifier "pending" by default,
+                # explicitly estimate gas here with block identifier 'latest' if not otherwise specified
+                # as a pending transaction can cause gas estimation to fail, notably in case of worklock refunds.
+                payload['gas'] = contract_function.estimateGas(payload, block_identifier='latest')
+            transaction_dict = contract_function.buildTransaction(payload)
         except (TestTransactionFailed, ValidationError, ValueError) as error:
             # Note: Geth raises ValueError in the same condition that pyevm raises ValidationError here.
             # Treat this condition as "Transaction Failed" during gas estimation.
@@ -682,9 +642,6 @@ class BlockchainInterface:
                 self.log.debug(f"[RECEIPT-{transaction_name}] | txhash: {receipt['transactionHash'].hex()}")
 
             return receipt
-
-    def get_blocktime(self):
-        return self.client.get_blocktime()
 
     @validate_checksum_address
     def send_transaction(self,
@@ -1053,7 +1010,6 @@ class BlockchainInterfaceFactory:
 
     class CachedInterface(NamedTuple):
         interface: BlockchainInterface
-        sync: bool
         emitter: StdoutEmitter
 
     class FactoryError(Exception):
@@ -1083,7 +1039,6 @@ class BlockchainInterfaceFactory:
     @classmethod
     def register_interface(cls,
                            interface: BlockchainInterface,
-                           sync: bool = False,
                            emitter=None,
                            force: bool = False
                            ) -> None:
@@ -1092,13 +1047,12 @@ class BlockchainInterfaceFactory:
         if (provider_uri in cls._interfaces) and not force:
             raise cls.InterfaceAlreadyInitialized(f"A connection already exists for {provider_uri}. "
                                                   "Use .get_interface instead.")
-        cached = cls.CachedInterface(interface=interface, sync=sync, emitter=emitter)
+        cached = cls.CachedInterface(interface=interface, emitter=emitter)
         cls._interfaces[provider_uri] = cached
 
     @classmethod
     def initialize_interface(cls,
                              provider_uri: str,
-                             sync: bool = False,
                              emitter=None,
                              interface_class: Interfaces = None,
                              *interface_args,
@@ -1119,7 +1073,7 @@ class BlockchainInterfaceFactory:
                                     *interface_args,
                                     **interface_kwargs)
 
-        cls._interfaces[provider_uri] = cls.CachedInterface(interface=interface, sync=sync,  emitter=emitter)
+        cls._interfaces[provider_uri] = cls.CachedInterface(interface=interface,  emitter=emitter)
 
     @classmethod
     def get_interface(cls, provider_uri: str = None) -> Interfaces:
@@ -1140,11 +1094,9 @@ class BlockchainInterfaceFactory:
                 raise cls.NoRegisteredInterfaces(f"There is no existing blockchain connection.")
 
         # Connect and Sync
-        interface, sync, emitter = cached_interface
+        interface, emitter = cached_interface
         if not interface.is_connected:
             interface.connect()
-            if sync:
-                interface.sync(emitter=emitter)
         return interface
 
     @classmethod

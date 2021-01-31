@@ -30,6 +30,7 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import subprocess
 
 import sys
 from pathlib import Path
@@ -46,7 +47,7 @@ author = 'NuCypher'
 # The short X.Y version
 version = ''
 # The full version, including alpha/beta/rc tags
-release = '4.2.1'
+release = '4.6.0'
 
 
 # -- General configuration ---------------------------------------------------
@@ -262,9 +263,22 @@ def run_apidoc(_):
     apidoc.main(apidoc_command)
 
 
+def run_solidity_apidoc(_):
+    source_dir = Path(__file__).parent.resolve()
+    scripts_dir = source_dir.parent.parent / 'scripts'
+
+    install_script = scripts_dir / 'installation' / 'install_solc.py'
+    subprocess.call(['python', str(install_script)])
+
+    doc_script = scripts_dir / 'solidity_doc' / 'generate_doc.py'
+    subprocess.call(['python', str(doc_script)])
+
+
 def setup(app):
+    app.add_css_file('style.css')
     app.connect("autodoc-process-docstring", remove_module_license)
     app.connect('builder-inited', run_apidoc)
+    app.connect('builder-inited', run_solidity_apidoc)
 
 
 add_module_names = False

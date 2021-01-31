@@ -49,9 +49,11 @@ def test_missing_configuration_file(default_filepath_mock, click_runner):
     assert "No Ursula configurations found.  run 'nucypher ursula init' then try again." in result.output
 
 
-def test_ursula_rest_host_determination(click_runner, mocker):
+def test_ursula_startup_ip_checkup(click_runner, mocker):
+    target = 'nucypher.cli.actions.configure.determine_external_ip_address'
+
     # Patch the get_external_ip call
-    mocker.patch.object(utilities.networking, 'get_external_ip_from_centralized_source', return_value=MOCK_IP_ADDRESS)
+    mocker.patch(target, return_value=MOCK_IP_ADDRESS)
     mocker.patch.object(UrsulaConfiguration, 'to_configuration_file', return_value=None)
 
     args = ('ursula', 'init', '--federated-only', '--network', TEMPORARY_DOMAIN)
@@ -63,13 +65,12 @@ def test_ursula_rest_host_determination(click_runner, mocker):
     args = ('ursula', 'init', '--federated-only', '--network', TEMPORARY_DOMAIN, '--force')
     result = click_runner.invoke(nucypher_cli, args, catch_exceptions=False, input=FAKE_PASSWORD_CONFIRMED)
     assert result.exit_code == 0
-    assert MOCK_IP_ADDRESS in result.output
 
     # Patch get_external_ip call to error output
-    mocker.patch.object(utilities.networking, 'get_external_ip_from_centralized_source', side_effect=UnknownIPAddress)
+    mocker.patch(target, side_effect=UnknownIPAddress)
     args = ('ursula', 'init', '--federated-only', '--network', TEMPORARY_DOMAIN, '--force')
     result = click_runner.invoke(nucypher_cli, args, catch_exceptions=True, input=FAKE_PASSWORD_CONFIRMED)
-    assert result.exit_code == 1
+    assert result.exit_code == 1, result.output
     assert isinstance(result.exception, UnknownIPAddress)
 
 
@@ -78,7 +79,7 @@ def test_ursula_run_with_prometheus_but_no_metrics_port(click_runner):
     args = ('ursula', 'run',  # Stat Ursula Command
             '--debug',  # Display log output; Do not attach console
             '--federated-only',  # Operating Mode
-            '--dev',  # Run in development mode (ephemeral node)
+            '--dev',  # Run in development mode (local ephemeral node)
             '--dry-run',  # Disable twisted reactor in subprocess
             '--lonely',  # Do not load seednodes
             '--prometheus'  # Specify collection of prometheus metrics
@@ -111,7 +112,7 @@ def test_run_lone_federated_default_development_ursula(click_runner):
                                          input=INSECURE_DEVELOPMENT_PASSWORD + '\n')
 
     time.sleep(Learner._SHORT_LEARNING_DELAY)
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Running" in result.output
     assert "127.0.0.1:{}".format(deploy_port) in result.output
 
@@ -151,7 +152,7 @@ def test_federated_ursula_learns_via_cli(click_runner, federated_ursulas):
     result = d.result
 
     assert result.exit_code == 0
-    assert "Starting Ursula" in result.output
+    assert "Starting services" in result.output
     assert f"127.0.0.1:{deploy_port}" in result.output
 
     reserved_ports = (UrsulaConfiguration.DEFAULT_REST_PORT, UrsulaConfiguration.DEFAULT_DEVELOPMENT_REST_PORT)
@@ -161,14 +162,16 @@ def test_federated_ursula_learns_via_cli(click_runner, federated_ursulas):
     assert teacher.checksum_address in result.output
     assert f"Saved TLS certificate for {teacher.nickname}" in result.output
 
+    federated_ursulas.clear()
 
-@pytest.mark.skip("Let's put this on ice until we get 2099 and Treasure Island working together.")
+
 @pt.inlineCallbacks
 def test_persistent_node_storage_integration(click_runner,
                                              custom_filepath,
                                              testerchain,
                                              blockchain_ursulas,
                                              agency_local_registry):
+
     alice, ursula, another_ursula, felix, staker, *all_yall = testerchain.unassigned_accounts
     filename = UrsulaConfiguration.generate_filename()
     another_ursula_configuration_file_location = os.path.join(custom_filepath, filename)
@@ -225,3 +228,47 @@ def test_persistent_node_storage_integration(click_runner,
                                              input=user_input,
                                              env=envvars)
     assert result.exit_code == 0
+
+
+def test_ursula_run_ip_checkup(testerchain, custom_filepath, click_runner, mocker, blockchain_ursulas, monkeypatch):
+
+    # Mock IP determination
+    target = 'nucypher.cli.actions.configure.determine_external_ip_address'
+    mocker.patch(target, return_value=MOCK_IP_ADDRESS)
+
+    # Mock Teacher Resolution
+    from nucypher.characters.lawful import Ursula
+    teacher = blockchain_ursulas.pop()
+    mocker.patch.object(Ursula, 'from_teacher_uri', return_value=teacher)
+
+    # Mock worker qualification
+    staker = blockchain_ursulas.pop()
+
+    def set_staker_address(worker, *args, **kwargs):
+        worker._checksum_address = staker.checksum_address
+        return True
+    monkeypatch.setattr(Worker, 'block_until_ready', set_staker_address)
+
+    # Setup
+    teacher = blockchain_ursulas.pop()
+    filename = UrsulaConfiguration.generate_filename()
+    another_ursula_configuration_file_location = os.path.join(custom_filepath, filename)
+
+    # manual teacher
+    run_args = ('ursula', 'run',
+                '--dry-run',
+                '--debug',
+                '--config-file', another_ursula_configuration_file_location,
+                '--teacher', teacher.rest_url())
+    result = click_runner.invoke(nucypher_cli, run_args, catch_exceptions=False, input=FAKE_PASSWORD_CONFIRMED)
+    assert result.exit_code == 0, result.output
+
+    # default teacher
+    run_args = ('ursula', 'run',
+                '--dry-run',
+                '--debug',
+                '--config-file', another_ursula_configuration_file_location)
+    result = click_runner.invoke(nucypher_cli, run_args, catch_exceptions=False, input=FAKE_PASSWORD_CONFIRMED)
+    assert result.exit_code == 0, result.output
+
+    blockchain_ursulas.clear()

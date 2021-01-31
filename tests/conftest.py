@@ -14,16 +14,19 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 """
-import argparse
+
 from collections import defaultdict
 
+import lmdb
 import pytest
 
 from nucypher.characters.control.emitters import WebEmitter
 from nucypher.crypto.powers import TransactingPower
+from nucypher.network.nodes import Learner
 from nucypher.network.trackers import AvailabilityTracker
 from nucypher.utilities.logging import GlobalLoggerSettings
-from tests.constants import INSECURE_DEVELOPMENT_PASSWORD
+from tests.constants import INSECURE_DEVELOPMENT_PASSWORD, MOCK_IP_ADDRESS
+from tests.mock.datastore import mock_lmdb_open
 
 # Crash on server error by default
 WebEmitter._crash_on_error_default = True
@@ -32,20 +35,14 @@ WebEmitter._crash_on_error_default = True
 LOCK_FUNCTION = TransactingPower.lock_account
 TransactingPower.lock_account = lambda *a, **k: True
 
-# Disable any hardcoded preferred teachers during tests.
-TEACHER_NODES = dict()
-
 # Prevent halting the reactor via health checks during tests
 AvailabilityTracker._halt_reactor = lambda *a, **kw: True
 
 # Global test character cache
 global_mutable_where_everybody = defaultdict(list)
 
-##########################################
-
-
-from nucypher.network.nodes import Learner
 Learner._DEBUG_MODE = False
+
 
 @pytest.fixture(autouse=True, scope='session')
 def __very_pretty_and_insecure_scrypt_do_not_use():
@@ -74,11 +71,9 @@ def __very_pretty_and_insecure_scrypt_do_not_use():
     # Re-Enable Scrypt KDF
     Scrypt.derive = original_derivation_function
 
-############################################
 
-
-@pytest.fixture(scope='module')
-def monkeymodule():
+@pytest.fixture(scope='session')
+def monkeysession():
     from _pytest.monkeypatch import MonkeyPatch
     mpatch = MonkeyPatch()
     yield mpatch
@@ -148,7 +143,7 @@ def pytest_collection_modifyitems(config, items):
     GlobalLoggerSettings.start_json_file_logging()
 
 
-# global_mutable_where_everybody = defaultdict(list)
+# global_mutable_where_everybody = defaultdict(list)  # TODO: cleanup
 
 @pytest.fixture(scope='module', autouse=True)
 def check_character_state_after_test(request):
@@ -188,3 +183,18 @@ def check_character_state_after_test(request):
         still_tracking  = [learner for learner in test_learners if hasattr(learner, 'work_tracker') and learner.work_tracker._tracking_task.running]
         for tracker in still_tracking:
             tracker.work_tracker.stop()
+
+
+
+
+@pytest.fixture(scope='session', autouse=True)
+def mock_datastore(monkeysession):
+    monkeysession.setattr(lmdb, 'open', mock_lmdb_open)
+    yield
+    
+
+
+@pytest.fixture(scope='session', autouse=True)
+def mock_get_external_ip_from_url_source(session_mocker):
+    target = 'nucypher.cli.actions.configure.determine_external_ip_address'
+    session_mocker.patch(target, return_value=MOCK_IP_ADDRESS)

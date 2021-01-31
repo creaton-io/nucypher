@@ -15,21 +15,19 @@ You should have received a copy of the GNU Affero General Public License
 along with nucypher.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import os
-from pathlib import Path
-from typing import List, Tuple, Union
 
 import maya
+import os
 from eth_tester.exceptions import TransactionFailed
 from eth_utils import to_canonical_address
 from hexbytes import HexBytes
+from typing import List, Tuple, Union, Optional
 from web3 import Web3
 
 from nucypher.blockchain.economics import BaseEconomics, StandardTokenEconomics
 from nucypher.blockchain.eth.actors import ContractAdministrator
 from nucypher.blockchain.eth.interfaces import BlockchainDeployerInterface, BlockchainInterfaceFactory
-from nucypher.blockchain.eth.registry import InMemoryContractRegistry
-from nucypher.blockchain.eth.sol.compile.compile import multiversion_compile
+from nucypher.blockchain.eth.registry import InMemoryContractRegistry, BaseContractRegistry
 from nucypher.blockchain.eth.sol.compile.constants import TEST_SOLIDITY_SOURCE_ROOT, SOLIDITY_SOURCE_ROOT
 from nucypher.blockchain.eth.sol.compile.types import SourceBundle
 from nucypher.blockchain.eth.token import NU
@@ -37,13 +35,13 @@ from nucypher.blockchain.eth.utils import epoch_to_period
 from nucypher.crypto.powers import TransactingPower
 from nucypher.utilities.gas_strategies import EXPECTED_CONFIRMATION_TIME_IN_SECONDS
 from nucypher.utilities.logging import Logger
-
 from tests.constants import (
     DEVELOPMENT_ETH_AIRDROP_AMOUNT,
     INSECURE_DEVELOPMENT_PASSWORD,
     NUMBER_OF_ETH_TEST_ACCOUNTS,
     NUMBER_OF_STAKERS_IN_BLOCKCHAIN_TESTS,
-    NUMBER_OF_URSULAS_IN_BLOCKCHAIN_TESTS, PYEVM_DEV_URI
+    NUMBER_OF_URSULAS_IN_BLOCKCHAIN_TESTS,
+    PYEVM_DEV_URI
 )
 
 
@@ -108,6 +106,7 @@ class TesterBlockchain(BlockchainDeployerInterface):
                  light: bool = False,
                  eth_airdrop: bool = False,
                  free_transactions: bool = False,
+                 compile_now: bool = True,
                  *args, **kwargs):
 
         self.free_transactions = free_transactions
@@ -115,13 +114,12 @@ class TesterBlockchain(BlockchainDeployerInterface):
         EXPECTED_CONFIRMATION_TIME_IN_SECONDS['free'] = 5  # Just some upper-limit
 
         super().__init__(provider_uri=self.PROVIDER_URI,
-                         provider_process=None,
                          poa=poa,
                          light=light,
                          *args, **kwargs)
 
         self.log = Logger("test-blockchain")
-        self.connect()
+        self.connect(compile_now=compile_now)
 
         # Generate additional ethereum accounts for testing
         population = test_accounts
@@ -133,17 +131,6 @@ class TesterBlockchain(BlockchainDeployerInterface):
 
         if eth_airdrop is True:  # ETH for everyone!
             self.ether_airdrop(amount=DEVELOPMENT_ETH_AIRDROP_AMOUNT)
-
-    # TODO: DRY this up
-    def connect(self, compile_now: bool = True, ignore_solidity_check: bool = False) -> bool:
-        super().connect()
-        if compile_now:
-            # Execute the compilation if we're recompiling
-            # Otherwise read compiled contract data from the registry.
-            check = not ignore_solidity_check
-            compiled_contracts = multiversion_compile(source_bundles=self.SOURCES, compiler_version_check=check)
-            self._raw_contract_cache = compiled_contracts
-        return self.is_connected
 
     def attach_middleware(self):
         if self.free_transactions:
@@ -222,24 +209,33 @@ class TesterBlockchain(BlockchainDeployerInterface):
                       f"| epoch {end_timestamp}")
 
     @classmethod
-    def bootstrap_network(cls, economics: BaseEconomics = None) -> Tuple['TesterBlockchain', 'InMemoryContractRegistry']:
+    def bootstrap_network(cls,
+                          registry: Optional[BaseContractRegistry] = None,
+                          economics: BaseEconomics = None
+                          ) -> Tuple['TesterBlockchain', 'InMemoryContractRegistry']:
         """For use with metric testing scripts"""
 
-        registry = InMemoryContractRegistry()
+        if registry is None:
+            registry = InMemoryContractRegistry()
         testerchain = cls()
-        BlockchainInterfaceFactory.register_interface(testerchain)
-        power = TransactingPower(password=INSECURE_DEVELOPMENT_PASSWORD,
-                                 account=testerchain.etherbase_account)
+        if not BlockchainInterfaceFactory.is_interface_initialized(provider_uri=testerchain.provider_uri):
+            BlockchainInterfaceFactory.register_interface(interface=testerchain)
+        power = TransactingPower(password=INSECURE_DEVELOPMENT_PASSWORD, account=testerchain.etherbase_account)
         power.activate()
         testerchain.transacting_power = power
 
         origin = testerchain.client.etherbase
-        deployer = ContractAdministrator(deployer_address=origin,
-                                         registry=registry,
-                                         economics=economics or cls.DEFAULT_ECONOMICS,
-                                         staking_escrow_test_mode=True)
+        admin = ContractAdministrator(deployer_address=origin,
+                                      registry=registry,
+                                      economics=economics or cls.DEFAULT_ECONOMICS,
+                                      staking_escrow_test_mode=True)
 
-        _receipts = deployer.deploy_network_contracts(interactive=False)
+        gas_limit = None  # TODO: Gas management - #842
+        for deployer_class in admin.primary_deployer_classes:
+            if deployer_class in ContractAdministrator.standard_deployer_classes:
+                admin.deploy_contract(contract_name=deployer_class.contract_name, gas_limit=gas_limit)
+            else:
+                admin.deploy_contract(contract_name=deployer_class.contract_name, gas_limit=gas_limit)
         return testerchain, registry
 
     @property

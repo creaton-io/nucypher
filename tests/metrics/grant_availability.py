@@ -19,8 +19,8 @@
 from pathlib import Path
 
 """
-WARNING: This script makes automatic transactions.  
-Do not use this script unless you know what you 
+WARNING: This script makes automatic transactions.
+Do not use this script unless you know what you
 are doing and intend to spend ETH measuring live
 policy availability.
 """
@@ -37,7 +37,7 @@ from umbral.keys import UmbralPrivateKey
 from web3.main import Web3
 from web3.types import Wei
 
-from network.middleware import RestMiddleware
+from nucypher.network.middleware import RestMiddleware
 from nucypher.characters.lawful import Bob, Ursula, Alice
 from nucypher.config.characters import AliceConfiguration
 from nucypher.policy.policies import Policy
@@ -82,6 +82,7 @@ DURATION: datetime.timedelta = datetime.timedelta(days=1)
 DEFAULT_ITERATIONS = 1  # `None` will run forever
 SAMPLE_RATE: int = 15  # seconds
 GAS_STRATEGY: str = 'fast'
+MAX_GAS_PRICE: int = 200  # gwei
 LABEL_PREFIX = 'random-metrics-label-'
 LABEL_SUFFIXER = lambda: os.urandom(16).hex()
 HANDPICKED_URSULA_URIS: List[str] = [
@@ -135,7 +136,7 @@ def collect(alice: Alice,
         else:
             success += 1
             policies[policy.public_key.hex()] = policy  # track
-            print(f"PEK:{policy.public_key.hex()} | HRAC {policy.hrac().hex()}")
+            print(f"PEK:{policy.public_key.hex()} | HRAC {policy.hrac.hex()}")
 
         # timeit
         end = maya.now()
@@ -169,7 +170,8 @@ def make_alice(known_nodes: Optional[Set[Ursula]] = None):
         start_learning_now=False,
         federated_only=False,
         learn_on_same_thread=True,
-        gas_strategy=GAS_STRATEGY
+        gas_strategy=GAS_STRATEGY,
+        max_gas_price=MAX_GAS_PRICE,
     )
 
     alice_config.initialize(password=INSECURE_PASSWORD)

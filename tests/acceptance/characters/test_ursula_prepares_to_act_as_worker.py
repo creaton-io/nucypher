@@ -23,7 +23,7 @@ from nucypher.characters.lawful import Enrico
 from nucypher.characters.unlawful import Vladimir
 from nucypher.crypto.api import verify_eip_191
 from nucypher.crypto.powers import SigningPower
-from nucypher.policy.policies import Policy
+from nucypher.policy.policies import BlockchainPolicy
 from tests.constants import INSECURE_DEVELOPMENT_PASSWORD
 from tests.utils.middleware import NodeIsDownMiddleware
 from tests.utils.ursula import make_decentralized_ursulas
@@ -34,7 +34,7 @@ def test_stakers_bond_to_ursulas(testerchain, test_registry, stakers, ursula_dec
     ursulas = make_decentralized_ursulas(ursula_config=ursula_decentralized_test_config,
                                          stakers_addresses=testerchain.stakers_accounts,
                                          workers_addresses=testerchain.ursulas_accounts,
-                                         commit_to_next_period=False)
+                                         commit_now=False)
 
     assert len(ursulas) == len(stakers)
     for ursula in ursulas:
@@ -166,7 +166,7 @@ def test_blockchain_ursulas_reencrypt(blockchain_ursulas, blockchain_alice, bloc
     blockchain_alice.network_middleware = NodeIsDownMiddleware()
     blockchain_alice.network_middleware.node_is_down(blockchain_ursulas[0])
 
-    with pytest.raises(Policy.Rejected):
+    with pytest.raises(BlockchainPolicy.NotEnoughBlockchainUrsulas):
         _policy = blockchain_alice.grant(bob=blockchain_bob,
                                          label=b'another-label',
                                          m=m,

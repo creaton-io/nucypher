@@ -26,7 +26,6 @@ from twisted.internet.protocol import connectionDone
 from twisted.internet.stdio import StandardIO
 from twisted.protocols.basic import LineReceiver
 
-from nucypher.blockchain.eth.clients import NuCypherGethGoerliProcess
 from nucypher.utilities.logging import Logger
 
 
@@ -48,7 +47,7 @@ class UrsulaCommandProtocol(LineReceiver):
         # Expose Ursula functional entry points
         self.__commands = {
 
-             # Help
+            # Help
             '?': self.paintHelp,
             'help': self.paintHelp,
 
@@ -56,9 +55,6 @@ class UrsulaCommandProtocol(LineReceiver):
             'status': self.paintStatus,
             'known_nodes': self.paintKnownNodes,
             'fleet_state': self.paintFleetState,
-
-            # Blockchain Control
-            'commit_next': self.commit_to_next_period,  # hidden
 
             # Learning Control
             'cycle_teacher': self.cycle_teacher,
@@ -70,6 +66,8 @@ class UrsulaCommandProtocol(LineReceiver):
 
         }
 
+        self._hidden_commands = ('?',)
+
     @property
     def commands(self):
         return self.__commands.keys()
@@ -80,7 +78,7 @@ class UrsulaCommandProtocol(LineReceiver):
         """
         self.emitter.echo("\nUrsula Command Help\n===================\n")
         for command, func in self.__commands.items():
-            if command not in ('?', 'commit_next'):
+            if command not in self._hidden_commands:
                 try:
                     self.emitter.echo(f'{command}\n{"-"*len(command)}\n{func.__doc__.lstrip()}')
                 except AttributeError:
@@ -167,12 +165,6 @@ class UrsulaCommandProtocol(LineReceiver):
         """
         return self.ursula.stop_learning_loop()
 
-    def commit_to_next_period(self):
-        """
-        manually make a commitment to the next period
-        """
-        return self.ursula.commit_to_next_period(fire_and_forget=False)
-
     def stop(self):
         """
         Shutdown the attached running Ursula node.
@@ -231,12 +223,3 @@ class JSONRPCLineReceiver(LineReceiver):
         line = line.strip(self.delimiter)
         if line:
             self.rpc_controller.handle_request(control_request=line)
-
-
-def get_geth_provider_process(start_now: bool = False) -> NuCypherGethGoerliProcess:
-    """Stage integrated ethereum node process"""
-    # TODO: Support domains and non-geth clients
-    process = NuCypherGethGoerliProcess()
-    if start_now:
-        process.start()
-    return process

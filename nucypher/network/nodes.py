@@ -245,8 +245,7 @@ class Learner:
 
         from nucypher.characters.lawful import Ursula
         self.node_class = node_class or Ursula
-        self.node_class.set_cert_storage_function(
-            node_storage.store_node_certificate)  # TODO: Fix this temporary workaround for on-disk cert storage.  #1481
+        self.node_class.set_cert_storage_function(node_storage.store_node_certificate)  # TODO: Fix this temporary workaround for on-disk cert storage.  #1481
 
         known_nodes = known_nodes or tuple()
         self.unresponsive_startup_nodes = list()  # TODO: Buckets - Attempt to use these again later  #567
@@ -386,11 +385,10 @@ class Learner:
         with suppress(KeyError):
             already_known_node = self.known_nodes[node.checksum_address]
             if not node.timestamp > already_known_node.timestamp:
-                # self.log.debug("Skipping already known node {}".format(already_known_node))  # FIXME: ""OMG, enough with the learning already!" – @vepkenez  (#1712)
                 # This node is already known.  We can safely return.
                 return False
 
-        self.known_nodes[node.checksum_address] = node
+        self.known_nodes[node.checksum_address] = node  # FIXME - dont always remember nodes, bucket them.
 
         if self.save_metadata:
             self.node_storage.store_node_metadata(node=node)
@@ -612,7 +610,8 @@ class Learner:
             elapsed = (round_finish - start).seconds
             if elapsed > timeout:
                 if len(self.known_nodes) >= number_of_nodes_to_know:  # Last chance!
-                    continue
+                    self.log.info(f"Learned about enough nodes after {rounds_undertaken} rounds.")
+                    return True
                 if not self._learning_task.running:
                     raise RuntimeError("Learning loop is not running.  Start it with start_learning().")
                 elif not reactor.running and not learn_on_this_thread:
@@ -1331,10 +1330,15 @@ class Teacher:
             address_first6=self.checksum_address[2:8]
         )
 
-    def known_nodes_details(self) -> dict:
+    def known_nodes_details(self, raise_invalid=True) -> dict:
         abridged_nodes = {}
         for checksum_address, node in self.known_nodes._nodes.items():
-            abridged_nodes[checksum_address] = self.node_details(node=node)
+            try:
+                abridged_nodes[checksum_address] = self.node_details(node=node)
+            except self.StampNotSigned:
+                if raise_invalid:
+                    raise
+                self.log.error(f"encountered unsigned stamp for node with checksum: {checksum_address}")
         return abridged_nodes
 
     @staticmethod
@@ -1367,11 +1371,11 @@ class Teacher:
                    }
         return payload
 
-    def abridged_node_details(self) -> dict:
+    def abridged_node_details(self, raise_invalid=True) -> dict:
         """Self-Reporting"""
         payload = self.node_details(node=self)
         states = self.known_nodes.abridged_states_dict()
-        known = self.known_nodes_details()
+        known = self.known_nodes_details(raise_invalid=raise_invalid)
         payload.update({'states': states, 'known_nodes': known})
         if not self.federated_only:
             payload.update({
